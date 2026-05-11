@@ -28,10 +28,18 @@
 #define APP_LED_BLINK_FAST_HZ       5U
 #define APP_LED_BLINK_SLOW_HZ       2U
 
-/* DShot300: 300 kbit/s. With TIM1 at 80 MHz, ARR+1 = 267 gives one bit
- * per ~3.34 us. T1H ≈ 75% * Tbit, T0H ≈ 37.5% * Tbit. */
+/* DShot300 TX: 300 kbit/s. With TIM1 at 80 MHz, ARR+1 = 267 gives one
+ * bit per ~3.34 us. T1H ~= 75% * Tbit, T0H ~= 37.5% * Tbit. */
 #define APP_DSHOT_ARR               266U
 #define APP_DSHOT_T1H               200U   /* CCR for a logical 1 */
 #define APP_DSHOT_T0H               100U   /* CCR for a logical 0 */
+
+/* DShot300 RX (input capture, after end-of-frame). PSC=7 -> 10 MHz tick
+ * (0.1 us); ARR=1500 -> 150 us RX timeout window; nominal bit cell at the
+ * same 300 kbit/s rate -> 33 ticks. Decoder samples mid-cell so it
+ * tolerates +/- 0.5 bit-cell of ESC clock drift. */
+#define APP_DSHOT_RX_PSC            7U
+#define APP_DSHOT_RX_ARR            1500U
+#define APP_DSHOT_RX_BIT_TICKS      33U
 
 #endif /* APP_CONFIG_H */

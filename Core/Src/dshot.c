@@ -246,7 +246,7 @@ void DShot_StopAll(void)
 DShotTelem DShot_ConsumeTelem(uint8_t channel)
 {
     DShotTelem out = { .valid = false };
-    if (channel >= APP_NUM_MOTORS) {
+    if (channel >= APP_NUM_MOTORS || !s_telem[channel].valid) {
         return out;
     }
 
@@ -260,34 +260,12 @@ DShotTelem DShot_ConsumeTelem(uint8_t channel)
 
 /* --------------------------- internal: RX path ---------------------------- */
 
-/*
- * RX timing.
- *
- * TIM1 ticks at 80 MHz / (RX_PSC+1) during the RX window. We want sub-100 ns
- * resolution for clean edge timestamping while keeping ARR comfortably
- * larger than one frame (21 bits * 3.33 us ≈ 70 us). Prescaler 7 gives
- * 10 MHz (0.1 us/tick); ARR = 1500 -> 150 us window for the response,
- * which fires TIM1_UP as our RX timeout.
- *
- * Bit cell = 33.3 ticks at 10 MHz for DShot300 (3.33 us / bit). The
- * decoder is tolerant of a bit-cell of width APP_DSHOT_RX_BIT_TICKS ± 50%
- * because it samples at mid-cell.
- */
-#define DSHOT_RX_PSC               7U
-#define DSHOT_RX_ARR               1500U
-#define APP_DSHOT_RX_BIT_TICKS     33U   /* 3.33 us @ 10 MHz */
-
 static void dshot_rx_switch_to_input(void)
 {
-    /* PA8..PA11: alternate function input. Pull-up keeps line idle high
-     * while the ESC's open-drain output drives transitions. */
-    for (uint32_t pin = LL_GPIO_PIN_8; pin <= LL_GPIO_PIN_11;
-         pin = (pin << 1)) {
-        LL_GPIO_SetPinMode(GPIOA, pin, LL_GPIO_MODE_ALTERNATE);
-        LL_GPIO_SetPinPull(GPIOA, pin, LL_GPIO_PULL_UP);
-    }
-
-    /* Disable each TX DMA channel before we re-arm for capture. */
+    /* GPIO mode + pull-up are set once in dshot_gpio_init_af and stay valid
+     * for both TX (PWM out via TIM1 AF1) and RX (TIM1 input capture via
+     * the same AF1): the timer owns the pin in both directions. We only
+     * need to flip the timer/DMA config here. */
     for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
         s_dma_ch[ch]->CCR = 0;
     }
@@ -305,9 +283,8 @@ static void dshot_rx_switch_to_input(void)
                 | TIM_CCER_CC3E | TIM_CCER_CC3P | TIM_CCER_CC3NP
                 | TIM_CCER_CC4E | TIM_CCER_CC4P | TIM_CCER_CC4NP;
 
-    /* Re-prescale TIM1 for capture resolution and timeout window. */
-    TIM1->PSC = DSHOT_RX_PSC;
-    TIM1->ARR = DSHOT_RX_ARR;
+    TIM1->PSC = APP_DSHOT_RX_PSC;
+    TIM1->ARR = APP_DSHOT_RX_ARR;
     TIM1->CNT = 0;
     TIM1->EGR = TIM_EGR_UG;            /* latch PSC/ARR */
     TIM1->SR  = 0;                     /* clear any pending flags */

@@ -12,41 +12,29 @@
  */
 
 #define DSHOT_RX_BITS              21U
-#define DSHOT_RX_GCR_BITS          20U
 #define DSHOT_RX_INVALID_NIBBLE    0xFFU
 
-/* 5b -> 4b GCR lookup (Bluejay/BLHeli_S table). Codes not listed are
- * invalid and translate to 0xFF. */
-static const uint8_t s_gcr5_to_4[32] = {
-    [0x19] = 0x0, [0x1B] = 0x1, [0x12] = 0x2, [0x13] = 0x3,
-    [0x1D] = 0x4, [0x15] = 0x5, [0x16] = 0x6, [0x17] = 0x7,
-    [0x1A] = 0x8, [0x09] = 0x9, [0x0A] = 0xA, [0x0B] = 0xB,
-    [0x1E] = 0xC, [0x0D] = 0xD, [0x0E] = 0xE, [0x0F] = 0xF,
-    /* Any 5-bit code not listed above defaults to 0x00, which is *not*
-     * what we want — patch in the invalid marker at init time. We can't
-     * use a designated-init "default" in plain C89/C99, so we provide
-     * a small init helper called once at decode time below. */
+/* 5b -> 4b GCR table (Bluejay / BLHeli_S). Unlisted codes are invalid;
+ * designated-init initialises the rest to 0, so the macro below patches
+ * every entry — listed codes get their nibble, unlisted ones get the
+ * invalid marker. */
+#define GCR_ENTRY(code, nibble) [code] = ((nibble) | 0x100U)
+
+static const uint16_t s_gcr_table_raw[32] = {
+    GCR_ENTRY(0x19, 0x0), GCR_ENTRY(0x1B, 0x1),
+    GCR_ENTRY(0x12, 0x2), GCR_ENTRY(0x13, 0x3),
+    GCR_ENTRY(0x1D, 0x4), GCR_ENTRY(0x15, 0x5),
+    GCR_ENTRY(0x16, 0x6), GCR_ENTRY(0x17, 0x7),
+    GCR_ENTRY(0x1A, 0x8), GCR_ENTRY(0x09, 0x9),
+    GCR_ENTRY(0x0A, 0xA), GCR_ENTRY(0x0B, 0xB),
+    GCR_ENTRY(0x1E, 0xC), GCR_ENTRY(0x0D, 0xD),
+    GCR_ENTRY(0x0E, 0xE), GCR_ENTRY(0x0F, 0xF),
 };
 
-static bool s_gcr_table_ready = false;
-static uint8_t s_gcr_table[32];
-
-static void gcr_table_init_once(void)
+static uint8_t gcr_lookup(uint8_t code5)
 {
-    if (s_gcr_table_ready) return;
-    for (int i = 0; i < 32; ++i) {
-        s_gcr_table[i] = DSHOT_RX_INVALID_NIBBLE;
-    }
-    s_gcr_table[0x19] = 0x0; s_gcr_table[0x1B] = 0x1;
-    s_gcr_table[0x12] = 0x2; s_gcr_table[0x13] = 0x3;
-    s_gcr_table[0x1D] = 0x4; s_gcr_table[0x15] = 0x5;
-    s_gcr_table[0x16] = 0x6; s_gcr_table[0x17] = 0x7;
-    s_gcr_table[0x1A] = 0x8; s_gcr_table[0x09] = 0x9;
-    s_gcr_table[0x0A] = 0xA; s_gcr_table[0x0B] = 0xB;
-    s_gcr_table[0x1E] = 0xC; s_gcr_table[0x0D] = 0xD;
-    s_gcr_table[0x0E] = 0xE; s_gcr_table[0x0F] = 0xF;
-    (void)s_gcr5_to_4; /* keep the literal in the binary for diff/audit */
-    s_gcr_table_ready = true;
+    uint16_t v = s_gcr_table_raw[code5 & 0x1F];
+    return (v & 0x100U) ? (uint8_t)(v & 0x0F) : DSHOT_RX_INVALID_NIBBLE;
 }
 
 /* --------------------------------------------------------------------------
@@ -90,7 +78,6 @@ uint8_t DShotGcr_EdgesToBits(const uint16_t *edges, uint16_t n_edges,
 bool DShotGcr_BitsToFrame(const uint8_t *bits, DShotGcrFrame *out)
 {
     if (bits == NULL || out == NULL) return false;
-    gcr_table_init_once();
     memset(out, 0, sizeof(*out));
 
     /* XOR-decode. The line was HIGH (= 1) before the first cell; each
@@ -120,10 +107,9 @@ bool DShotGcr_BitsToFrame(const uint8_t *bits, DShotGcrFrame *out)
         gcr[n] = sym;
     }
 
-    /* 5b -> 4b lookup. */
     uint8_t nibbles[4];
     for (uint8_t n = 0; n < 4; ++n) {
-        uint8_t v = s_gcr_table[gcr[n] & 0x1F];
+        uint8_t v = gcr_lookup(gcr[n]);
         if (v == DSHOT_RX_INVALID_NIBBLE) {
             return false;
         }
