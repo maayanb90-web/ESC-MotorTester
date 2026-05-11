@@ -56,9 +56,19 @@ from `motor_test_rig.ioc`.
 1. Mount 4 motors on the rig (no propellers). Wire them to the 4-in-1 ESC.
 2. Power the rig from a 6S LiPo or bench PSU. All motors stay off.
 3. **Double-press** the button → motors spin at 15% throttle for 10 s.
-4. Test ends automatically. LD3:
+4. Test ends automatically. LD3 indicates the result:
    - **Solid ON** = all 4 motors within ±5% of the group mean → batch passes.
    - **Blinking @ 2 Hz** = at least one motor failed (or no telemetry).
+
+   At the same instant, every motor emits a short audible tone (~100 ms)
+   through its windings:
+   - **High chime (~870 Hz)** = batch passed.
+   - **Low buzz (~250 Hz)** = at least one motor failed.
+
+   The motors hum during the tone but **do not spin**. This is a DShot
+   beacon command (BEACON5 / BEACON1) — the LED behaviour is unchanged
+   from PRD §5; the audible tone is an added affordance so the operator
+   doesn't need to watch the rig.
 5. **Single-press** at any time aborts a running test, or clears the result.
 
 ## Module layout
@@ -96,17 +106,26 @@ make -C tools test
 ```
 
 Fixtures can be patched in from logic-analyzer captures by editing
-`tools/decode_test.c`. The expected output is `18 passed, 0 failed`.
+`tools/decode_test.c`. The expected output is `34 passed, 0 failed`
+(GCR round-trip, CRC corruption, motor-stopped sentinel, eRPM math
+edge cases, bidir-frame CRC round-trip, RPM-stats all-zero, RPM-stats
+known-good).
 
 ## Tunables
 
-All PRD-level magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
+All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 
-| Symbol                       | Value | PRD §  |
-|------------------------------|-------|--------|
-| `APP_THROTTLE_PERCENT`       | 15    | §5     |
-| `APP_TEST_DURATION_MS`       | 10000 | §5     |
-| `APP_STARTUP_SKIP_MS`        | 2000  | §5     |
-| `APP_TOLERANCE_PERCENT`      | 5     | §5     |
-| `APP_MOTOR_POLE_COUNT`       | 14    | §5     |
-| `APP_DOUBLE_PRESS_WINDOW_MS` | 400   | §5/§8  |
+| Symbol                       | Value | Notes                                 |
+|------------------------------|-------|---------------------------------------|
+| `APP_THROTTLE_PERCENT`       | 15    | PRD §5                                |
+| `APP_TEST_DURATION_MS`       | 10000 | PRD §5                                |
+| `APP_STARTUP_SKIP_MS`        | 2000  | PRD §5                                |
+| `APP_TOLERANCE_PERCENT`      | 5     | PRD §5                                |
+| `APP_MOTOR_POLE_COUNT`       | 14    | PRD §5                                |
+| `APP_DOUBLE_PRESS_WINDOW_MS` | 400   | PRD §5 / §8                           |
+| `APP_BEACON_DURATION_MS`     | 100   | Beyond PRD — beacon hold (>6 frames) |
+| `APP_BEACON_PASS_CMD`        | 5     | Beyond PRD — `DSHOT_CMD_BEACON5` chime |
+| `APP_BEACON_FAIL_CMD`        | 1     | Beyond PRD — `DSHOT_CMD_BEACON1` buzz |
+| `APP_DSHOT_RX_BIT_TICKS`     | 33    | RX bit cell @ 10 MHz tick (3.33 µs)   |
+| `APP_DSHOT_RX_PSC`           | 7     | TIM1 prescaler during RX → 10 MHz     |
+| `APP_DSHOT_RX_ARR`           | 1500  | TIM1 ARR during RX → 150 µs timeout   |
