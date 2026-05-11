@@ -404,14 +404,18 @@ static void dshot_decode_rx(void)
             continue;
         }
 
-        DShotTelem t = {
-            .valid     = true,
-            .period_us = gcr.period_us,
-            .erpm      = 60000000U / gcr.period_us,
-            .rpm       = DShotGcr_PeriodToRpm(gcr.period_us,
-                                              APP_MOTOR_POLE_COUNT),
-        };
-        s_telem[ch] = t;
+        /* Single-writer-flag pattern: commit data fields first, then a
+         * memory barrier, then set .valid as the handshake. DShot_ConsumeTelem
+         * reads .valid first and the data fields under PRIMASK protection,
+         * so this guarantees the consumer never sees .valid=true with
+         * stale fields - regardless of NVIC priority ordering between
+         * this IRQ and the SysTick that calls the consumer. */
+        s_telem[ch].period_us = gcr.period_us;
+        s_telem[ch].erpm      = 60000000U / gcr.period_us;
+        s_telem[ch].rpm       = DShotGcr_PeriodToRpm(gcr.period_us,
+                                                    APP_MOTOR_POLE_COUNT);
+        __DMB();
+        s_telem[ch].valid     = true;
     }
 }
 
