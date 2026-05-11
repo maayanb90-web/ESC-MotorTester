@@ -62,7 +62,13 @@
  * in Core/Inc/dshot.h. */
 #define APP_BEACON_DURATION_MS      100U
 #define APP_BEACON_PASS_CMD         5U   /* DSHOT_CMD_BEACON5 — ~870 Hz chime */
-#define APP_BEACON_FAIL_CMD         1U   /* DSHOT_CMD_BEACON1 — ~250 Hz buzz  */
+
+/* Per-motor fail-beacon mapping. Motor i is beeped with
+ * DSHOT_CMD_BEACON(i+1) so the four channels carry four distinct
+ * pitches (~250 / 280 / 330 / 430 Hz). Lets the operator identify
+ * which motor(s) are buzzing by ear when several fail at once.
+ * BEACON5 stays reserved for the all-pass chime above. */
+#define APP_BEACON_FAIL_CMD_PER_MOTOR  { 1U, 2U, 3U, 4U }
 
 /* Auto-calibration: triple-press from Idle runs this many composite
  * cycles back-to-back on a known-good batch, then prints recommended

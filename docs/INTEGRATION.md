@@ -164,7 +164,19 @@ motor windings as piezo speakers via DShot beacon commands. Configured
 in `Core/Inc/app_config.h`:
 
 - `APP_BEACON_PASS_CMD` — currently `5` (`DSHOT_CMD_BEACON5`, ~870 Hz).
-- `APP_BEACON_FAIL_CMD` — currently `1` (`DSHOT_CMD_BEACON1`, ~250 Hz).
+- `APP_BEACON_FAIL_CMD_PER_MOTOR` — currently `{1, 2, 3, 4}`. Each
+  motor's failure tone uses its own DShot BEACON command so the four
+  channels produce four distinct pitches:
+
+  | Motor | DShot command | Pitch    |
+  |-------|---------------|----------|
+  | 0     | BEACON1       | ~250 Hz  |
+  | 1     | BEACON2       | ~280 Hz  |
+  | 2     | BEACON3       | ~330 Hz  |
+  | 3     | BEACON4       | ~430 Hz  |
+
+  Reorder the macro initialiser in `app_config.h` if a different
+  per-channel mapping is preferred.
 - `APP_BEACON_DURATION_MS` — currently `100`. Must be ≥ 6 frames at
   the SysTick rate (BLHeli's documented minimum-consecutive-frames
   requirement).
@@ -175,12 +187,14 @@ Behaviour:
 
 - **Pass** — every motor emits a single ~100 ms high chime, then the
   rig is silent. LD3 stays solid. Single-press → Idle.
-- **Fail** — for the first ~100 ms only the *failed* motors emit the
-  low buzz; passed motors stay silent (instant identification at
-  test completion). After that the rig loops a 400 ms-on / 200 ms-off
-  cadence indefinitely on the failed channels only. LD3 stays in
-  2 Hz slow blink. The operator hears and visibly sees which motors
-  are vibrating, pulls them, and single-presses to clear → Idle.
+- **Fail** — for the first ~100 ms only the *failed* motors emit
+  their per-channel buzz; passed motors stay silent (instant
+  identification at test completion). After that the rig loops a
+  400 ms-on / 200 ms-off cadence indefinitely on the failed
+  channels only, each at its own pitch. LD3 stays in 2 Hz slow
+  blink. The operator can identify which motors are buzzing by ear
+  alone (two failures sound clearly different), pulls them, and
+  single-presses to clear → Idle.
 
 The motors **hum but do not spin** during any beacon — the DShot
 beacon command vibrates the windings without driving the rotor. The

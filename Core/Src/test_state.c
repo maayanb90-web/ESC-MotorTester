@@ -24,6 +24,9 @@ static RpmAccumulator   s_acc[3][APP_NUM_MOTORS];
 static uint32_t         s_plateau_c_mean[APP_NUM_MOTORS];   /* half-life threshold per motor */
 static uint32_t         s_half_life_ticks[APP_NUM_MOTORS];
 
+static const uint16_t   s_fail_cmd_per_motor[APP_NUM_MOTORS] =
+    APP_BEACON_FAIL_CMD_PER_MOTOR;
+
 static volatile TestPhase  s_phase       = TEST_IDLE;
 static volatile uint32_t   s_phase_ticks = 0;
 static CompositeResult     s_last_result = {0};
@@ -202,7 +205,7 @@ static void drive_result_tick(void)
             for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
                 values[i] = s_last_result.per_motor_pass[i]
                     ? DSHOT_CMD_MOTOR_STOP
-                    : APP_BEACON_FAIL_CMD;
+                    : s_fail_cmd_per_motor[i];
             }
         }
         DShot_SendPerChannel(values, true);
@@ -214,17 +217,18 @@ static void drive_result_tick(void)
         return;
     }
 
-    /* Fail-indicate cadence: 400 ms BEACON1 on failed motors, 200 ms
-     * silence on all motors, repeat. The silence gap re-triggers the
-     * ESC's beacon on each cycle, so the chirps are crisp and
-     * countable. */
+    /* Fail-indicate cadence: 400 ms of per-motor BEACONs on the failed
+     * channels, 200 ms silence on all channels, repeat. Each failed
+     * motor gets its own pitch (s_fail_cmd_per_motor) so two failures
+     * sound clearly different; the silence gap re-triggers each ESC's
+     * beacon on every cycle so the chirps are crisp and countable. */
     const uint32_t cycle_len = APP_FAIL_INDICATE_ON_MS + APP_FAIL_INDICATE_OFF_MS;
     const uint32_t pos       = (s_phase_ticks - APP_BEACON_DURATION_MS) % cycle_len;
     const bool     in_beep   = pos < APP_FAIL_INDICATE_ON_MS;
 
     for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
         if (in_beep && !s_last_result.per_motor_pass[i]) {
-            values[i] = APP_BEACON_FAIL_CMD;
+            values[i] = s_fail_cmd_per_motor[i];
         } else {
             values[i] = DSHOT_CMD_MOTOR_STOP;
         }

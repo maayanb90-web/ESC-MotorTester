@@ -69,9 +69,12 @@ from `motor_test_rig.ioc`.
 
    At the same instant, the motors emit audible cues:
    - **All-pass** → ~100 ms high chime (~870 Hz) on every motor, then silence.
-   - **Failure** → after a short low buzz, the **failed motors keep beeping**
-     in a 400 ms-on / 200 ms-off cadence until cleared. Passed motors
-     stay silent.
+   - **Failure** → the **failed motors keep beeping** in a 400 ms-on /
+     200 ms-off cadence until cleared, each motor at its own pitch
+     (motor 0 → ~250 Hz, motor 1 → ~280 Hz, motor 2 → ~330 Hz,
+     motor 3 → ~430 Hz). Two motors failing produce two clearly
+     different tones, so the tester can identify which channels are
+     bad by ear alone. Passed motors stay silent.
 
    The motors hum (and visibly vibrate) during a tone but **do not spin**.
    The tester walks up to the rig, hears and sees exactly which motors
@@ -180,7 +183,7 @@ All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 | `APP_CALIBRATION_CYCLES`     | 20    | Cycles run on triple-press calibration (~4-5 min) |
 | `APP_BEACON_DURATION_MS`     | 100   | Initial overall pass/fail tone |
 | `APP_BEACON_PASS_CMD`        | 5     | `DSHOT_CMD_BEACON5` — high chime |
-| `APP_BEACON_FAIL_CMD`        | 1     | `DSHOT_CMD_BEACON1` — low buzz |
+| `APP_BEACON_FAIL_CMD_PER_MOTOR` | `{1,2,3,4}` | `DSHOT_CMD_BEACON1..4` — distinct pitch per motor |
 | `APP_FAIL_INDICATE_ON_MS`    | 400   | Per-failed-motor beep on-duration |
 | `APP_FAIL_INDICATE_OFF_MS`   | 200   | Silence between beeps (re-triggers ESC beacon) |
 | `APP_DSHOT_RX_BIT_TICKS`     | 33    | RX bit cell @ 10 MHz tick (3.33 µs)   |
