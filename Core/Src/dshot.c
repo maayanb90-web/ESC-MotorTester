@@ -1,4 +1,5 @@
 #include "dshot.h"
+#include "dshot_gcr.h"
 
 #include "stm32l4xx_ll_bus.h"
 #include "stm32l4xx_ll_dma.h"
@@ -257,63 +258,167 @@ DShotTelem DShot_ConsumeTelem(uint8_t channel)
     return out;
 }
 
-/* --------------------------- internal: RX hook ---------------------------- */
+/* --------------------------- internal: RX path ---------------------------- */
 
 /*
- * Decode the GCR-encoded eRPM-period response from the captured edge
- * timestamps for one channel. Returns true on a valid frame (CRC OK).
+ * RX timing.
  *
- * This is the firmware-bring-up surface: the structure is here, the actual
- * 5b/4b GCR table + clock-recovery logic must be verified against a logic
- * analyzer. Until that's done the function returns false, which the
- * application interprets as "no telemetry => motor failed" per PRD §5.
+ * TIM1 ticks at 80 MHz / (RX_PSC+1) during the RX window. We want sub-100 ns
+ * resolution for clean edge timestamping while keeping ARR comfortably
+ * larger than one frame (21 bits * 3.33 us ≈ 70 us). Prescaler 7 gives
+ * 10 MHz (0.1 us/tick); ARR = 1500 -> 150 us window for the response,
+ * which fires TIM1_UP as our RX timeout.
+ *
+ * Bit cell = 33.3 ticks at 10 MHz for DShot300 (3.33 us / bit). The
+ * decoder is tolerant of a bit-cell of width APP_DSHOT_RX_BIT_TICKS ± 50%
+ * because it samples at mid-cell.
  */
-static bool dshot_rx_decode(uint8_t ch, DShotTelem *out)
+#define DSHOT_RX_PSC               7U
+#define DSHOT_RX_ARR               1500U
+#define APP_DSHOT_RX_BIT_TICKS     33U   /* 3.33 us @ 10 MHz */
+
+static void dshot_rx_switch_to_input(void)
 {
-    (void)ch;
-    (void)out;
-    /* TODO(rx-bringup): GCR clock-recovery + 5b/4b decode + CRC check.
-     * Until implemented, leave telemetry invalid so the failure surfaces
-     * as a "no-telemetry" fail rather than silent pass. */
-    return false;
+    /* PA8..PA11: alternate function input. Pull-up keeps line idle high
+     * while the ESC's open-drain output drives transitions. */
+    for (uint32_t pin = LL_GPIO_PIN_8; pin <= LL_GPIO_PIN_11;
+         pin = (pin << 1)) {
+        LL_GPIO_SetPinMode(GPIOA, pin, LL_GPIO_MODE_ALTERNATE);
+        LL_GPIO_SetPinPull(GPIOA, pin, LL_GPIO_PULL_UP);
+    }
+
+    /* Disable each TX DMA channel before we re-arm for capture. */
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        s_dma_ch[ch]->CCR = 0;
+    }
+
+    /* Drop the CC1..CC4 channel enables, then reconfigure as input
+     * capture (CCxS = 01 -> ICx mapped to TIx), both edges (CCxNP=1,
+     * CCxP=1), with a light 4-cycle input filter to suppress glitches. */
+    TIM1->CCER  = 0;
+    TIM1->CCMR1 = (1U << TIM_CCMR1_CC1S_Pos) | (2U << TIM_CCMR1_IC1F_Pos)
+                | (1U << TIM_CCMR1_CC2S_Pos) | (2U << TIM_CCMR1_IC2F_Pos);
+    TIM1->CCMR2 = (1U << TIM_CCMR2_CC3S_Pos) | (2U << TIM_CCMR2_IC3F_Pos)
+                | (1U << TIM_CCMR2_CC4S_Pos) | (2U << TIM_CCMR2_IC4F_Pos);
+    TIM1->CCER  = TIM_CCER_CC1E | TIM_CCER_CC1P | TIM_CCER_CC1NP
+                | TIM_CCER_CC2E | TIM_CCER_CC2P | TIM_CCER_CC2NP
+                | TIM_CCER_CC3E | TIM_CCER_CC3P | TIM_CCER_CC3NP
+                | TIM_CCER_CC4E | TIM_CCER_CC4P | TIM_CCER_CC4NP;
+
+    /* Re-prescale TIM1 for capture resolution and timeout window. */
+    TIM1->PSC = DSHOT_RX_PSC;
+    TIM1->ARR = DSHOT_RX_ARR;
+    TIM1->CNT = 0;
+    TIM1->EGR = TIM_EGR_UG;            /* latch PSC/ARR */
+    TIM1->SR  = 0;                     /* clear any pending flags */
+
+    /* Per-channel DMA in peripheral-to-memory mode, recording CCRx into
+     * s_rx_buf[ch]. 16-bit transfers — the upper half of CCRx is zero
+     * for non-32-bit timers, which matches the uint16_t buffer width. */
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        DMA_Channel_TypeDef *dma = s_dma_ch[ch];
+        dma->CCR   = 0;
+        dma->CNDTR = DSHOT_RX_CAPS;
+        dma->CPAR  = (uint32_t)s_ccr[ch];
+        dma->CMAR  = (uint32_t)s_rx_buf[ch];
+        dma->CCR   = DMA_CCR_MINC                       /* mem-increment */
+                   | (1U << DMA_CCR_PSIZE_Pos)          /* 16-bit periph */
+                   | (1U << DMA_CCR_MSIZE_Pos)          /* 16-bit mem    */
+                   | DMA_CCR_PL_1;                      /* priority high */
+        s_dmamux_ch[ch]->CCR = s_dmamux_req[ch];
+        dma->CCR  |= DMA_CCR_EN;
+    }
+
+    /* Update IRQ acts as the RX timeout; on ARR wrap we evaluate whatever
+     * captures landed. */
+    TIM1->DIER = TIM_DIER_UIE;
+    TIM1->CR1 |= TIM_CR1_CEN;
 }
 
-/* End-of-frame: DMA1_Channel5 transfer-complete signals the last CCR
- * write on CH4. We use it to flip CH1..CH4 to input capture and arm the
- * RX path. */
+static void dshot_rx_disarm(void)
+{
+    TIM1->CR1  &= ~TIM_CR1_CEN;
+    TIM1->DIER &= ~TIM_DIER_UIE;
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        s_dma_ch[ch]->CCR &= ~DMA_CCR_EN;
+    }
+}
+
+static void dshot_restore_tx(void)
+{
+    /* Roll back to TX configuration so the next DShot_SendAll() works
+     * without further reconfig. The TX init in dshot_tim1_init covers
+     * PWM mode + preload; we only need to undo what RX changed. */
+    TIM1->PSC   = 0;
+    TIM1->ARR   = APP_DSHOT_ARR;
+    TIM1->EGR   = TIM_EGR_UG;
+    TIM1->DIER  = 0;
+    TIM1->CCER  = TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC4E;
+    TIM1->CCMR1 = (6U << TIM_CCMR1_OC1M_Pos) | TIM_CCMR1_OC1PE
+                | (6U << TIM_CCMR1_OC2M_Pos) | TIM_CCMR1_OC2PE;
+    TIM1->CCMR2 = (6U << TIM_CCMR2_OC3M_Pos) | TIM_CCMR2_OC3PE
+                | (6U << TIM_CCMR2_OC4M_Pos) | TIM_CCMR2_OC4PE;
+}
+
+static void dshot_decode_rx(void)
+{
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        /* CNDTR tells us how many entries are *unused*. The number of
+         * edges we actually captured is the buffer size minus that. */
+        uint16_t remaining = (uint16_t)s_dma_ch[ch]->CNDTR;
+        uint16_t n_edges   = (remaining > DSHOT_RX_CAPS)
+                           ? 0U
+                           : (uint16_t)(DSHOT_RX_CAPS - remaining);
+
+        DShotGcrFrame gcr;
+        if (!DShotGcr_Decode(s_rx_buf[ch], n_edges,
+                             APP_DSHOT_RX_BIT_TICKS, &gcr)) {
+            /* Leave s_telem[ch].valid = false so the app treats it as a
+             * no-telemetry failure per PRD §5. */
+            s_telem[ch].valid = false;
+            continue;
+        }
+
+        DShotTelem t = {
+            .valid     = true,
+            .period_us = gcr.period_us,
+            .erpm      = gcr.motor_stopped
+                            ? 0U
+                            : (60000000U / gcr.period_us),
+            .rpm       = gcr.motor_stopped
+                            ? 0U
+                            : DShotGcr_PeriodToRpm(gcr.period_us,
+                                                   APP_MOTOR_POLE_COUNT),
+        };
+        s_telem[ch] = t;
+    }
+}
+
+/* End-of-frame: DMA1_Channel5 transfer-complete fires on the last CCR
+ * write to CH4. Switch CH1..CH4 to input capture and let the ESC drive
+ * the GCR response. */
 void DMA1_Channel5_IRQHandler(void)
 {
     if (DMA1->ISR & DMA_ISR_TCIF5) {
         DMA1->IFCR = DMA_IFCR_CTCIF5;
 
-        /* Stop the bit clock; no more CC DMA requests. */
-        LL_TIM_DisableCounter(TIM1);
+        /* Stop the bit clock; no more CC DMA requests on TX. */
+        TIM1->CR1 &= ~TIM_CR1_CEN;
 
-        /* TODO(rx-bringup):
-         *   1) Reconfigure PA8..PA11 to AF input (OPENDRAIN OFF, pull-up keeps line idle high).
-         *   2) Switch TIM1 CH1..CH4 to input-capture mode (CCMR1/CCMR2).
-         *   3) Arm DMA1_Channel2..5 as circular timestamp recorders.
-         *   4) Configure TIM1_UP as a ~100 us RX timeout.
-         *
-         * Once the captures land, dshot_rx_decode() per channel writes
-         * s_telem[ch] and sets .valid = true.
-         */
+        dshot_rx_switch_to_input();
     }
 }
 
+/* RX timeout: TIM1 wrapped without a follow-up TX kick, meaning either
+ * the GCR response is done or never arrived. Decode whatever the DMA
+ * captured. */
 void TIM1_UP_TIM16_IRQHandler(void)
 {
     if (TIM1->SR & TIM_SR_UIF) {
         TIM1->SR = (uint32_t)~TIM_SR_UIF;
 
-        /* RX-watchdog. If a frame didn't decode, leave .valid = false so
-         * the application treats it as a failure per PRD §5 ("no telemetry
-         * from that channel" => motor fails). */
-        for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
-            DShotTelem t = { .valid = false };
-            if (dshot_rx_decode(ch, &t)) {
-                s_telem[ch] = t;
-            }
-        }
+        dshot_rx_disarm();
+        dshot_decode_rx();
+        dshot_restore_tx();
     }
 }

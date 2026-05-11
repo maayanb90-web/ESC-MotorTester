@@ -49,19 +49,36 @@ from `motor_test_rig.ioc`.
 Core/
 ├── Inc/
 │   ├── dshot.h          bidirectional DShot300 driver API
+│   ├── dshot_gcr.h      pure 5b/4b GCR decoder (host-testable)
 │   ├── button.h         debounced single/double-press detection
 │   ├── led.h            LD3 state (off / solid / slow blink / fast blink)
 │   ├── rpm_stats.h      ±5% deviation pass/fail
 │   ├── test_state.h     Idle / Running / Result state machine
 │   └── app_config.h     PRD-level tunables in one place
-└── Src/
-    ├── dshot.c          TIM1 + DMA TX path, IC + DMA RX, GCR decode
-    ├── button.c
-    ├── led.c
-    ├── rpm_stats.c
-    ├── test_state.c
-    └── app.c            wires modules together; called from main.c
+├── Src/
+│   ├── dshot.c          TIM1 + DMA TX, IC + DMA RX, calls into dshot_gcr
+│   ├── dshot_gcr.c      pure decode logic — no STM32 deps
+│   ├── button.c
+│   ├── led.c
+│   ├── rpm_stats.c
+│   ├── test_state.c
+│   └── app.c            wires modules together; called from main.c
+tools/
+├── decode_test.c        host-side round-trip + CRC tests for dshot_gcr
+└── Makefile             `make -C tools test`
 ```
+
+## Host-side tests
+
+The GCR/CRC decode logic compiles on the host with no STM32 dependencies.
+Run the round-trip + corruption tests with:
+
+```sh
+make -C tools test
+```
+
+Fixtures can be patched in from logic-analyzer captures by editing
+`tools/decode_test.c`. The expected output is `18 passed, 0 failed`.
 
 ## Tunables
 

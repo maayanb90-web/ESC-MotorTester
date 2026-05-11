@@ -24,6 +24,9 @@ build/
 .vscode/
 .idea/
 
+# Host test binary
+tools/decode_test
+
 # OS noise
 .DS_Store
 Thumbs.db
