@@ -42,6 +42,10 @@ void Error_Handler(void);
 /* Pin labels — match the GPIO_Label fields in motor_test_rig.ioc. */
 #define USER_BTN_Pin    GPIO_PIN_0
 #define USER_BTN_GPIO_Port  GPIOA
+#define USART2_TX_Pin   GPIO_PIN_2
+#define USART2_TX_GPIO_Port GPIOA
+#define USART2_RX_Pin   GPIO_PIN_15
+#define USART2_RX_GPIO_Port GPIOA
 #define DSHOT_CH1_Pin   GPIO_PIN_8
 #define DSHOT_CH1_GPIO_Port GPIOA
 #define DSHOT_CH2_Pin   GPIO_PIN_9

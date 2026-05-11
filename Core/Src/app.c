@@ -4,6 +4,7 @@
 #include "dshot.h"
 #include "led.h"
 #include "test_state.h"
+#include "trace.h"
 
 #include "stm32l4xx.h"
 
@@ -12,6 +13,8 @@ void App_Init(void)
     Led_Init();
     Button_Init();
     DShot_Init();
+    Trace_Init();
+    Trace_PrintHeader();
     TestState_Init();
 }
 

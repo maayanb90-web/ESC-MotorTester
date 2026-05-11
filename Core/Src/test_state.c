@@ -4,7 +4,9 @@
 #include "button.h"
 #include "dshot.h"
 #include "led.h"
+#include "main.h"          /* HAL_GetTick for trace timestamps */
 #include "rpm_stats.h"
+#include "trace.h"
 
 /*
  * Composite v2 motor QA: 3-plateau staircase (15 / 25 / 40 %) + 4 s
@@ -24,6 +26,11 @@ static uint32_t         s_half_life_ticks[APP_NUM_MOTORS];
 static volatile TestPhase  s_phase       = TEST_IDLE;
 static volatile uint32_t   s_phase_ticks = 0;
 static CompositeResult     s_last_result = {0};
+static uint32_t            s_cycle_id    = 0;
+/* True while a test cycle is in flight (between enter_plateau_a and
+ * either enter_result or enter_idle-on-abort). Distinguishes mid-test
+ * abort from the operator clearing a finished cycle. */
+static bool                s_active_run  = false;
 
 /* ------------------------------ transitions -------------------------------- */
 
@@ -31,6 +38,14 @@ static void enter_idle(void)
 {
     DShot_StopAll();
     Led_SetMode(LED_OFF);
+
+    /* If we're aborting from an active test (not from TEST_RESULT after
+     * the cycle finished), log the abort so the host can see the gap. */
+    if (s_active_run) {
+        Trace_PrintResult(NULL, ++s_cycle_id, HAL_GetTick(), true);
+        s_active_run = false;
+    }
+
     s_phase       = TEST_IDLE;
     s_phase_ticks = 0;
 }
@@ -45,6 +60,7 @@ static void enter_plateau_a(void)
         s_half_life_ticks[ch] = 0;
     }
     Led_SetMode(LED_BLINK_FAST);
+    s_active_run  = true;
     s_phase       = TEST_PLATEAU_A;
     s_phase_ticks = 0;
 }
@@ -86,6 +102,9 @@ static void enter_result(void)
     HalfLife_Evaluate(s_half_life_ticks, APP_HALF_LIFE_TOL_PCT_X10,
                       &s_last_result.spin_down);
     Composite_Aggregate(&s_last_result);
+
+    Trace_PrintResult(&s_last_result, ++s_cycle_id, HAL_GetTick(), false);
+    s_active_run = false;
 
     Led_SetMode(s_last_result.overall_pass ? LED_SOLID_ON : LED_BLINK_SLOW);
     s_phase       = TEST_RESULT;

@@ -16,6 +16,8 @@ See [`docs/motor_test_rig_prd.md`](docs/motor_test_rig_prd.md) for the full PRD.
 | DShot CH4      | PA11  | TIM1_CH4 (AF1)    |
 | Button         | PA0   | GPIO input, internal pull-up, polled @ 1 kHz |
 | Status LED LD3 | PB3   | GPIO output (active high) |
+| Log TX         | PA2   | USART2_TX (AF7) → ST-LINK VCP @ 115200 8N1 |
+| Log RX         | PA15  | USART2_RX (AF3) — reserved for future cmd shell |
 | SWD            | PA13/PA14 | reserved      |
 
 All 4 DShot channels share TIM1, which guarantees sub-cycle synchronization
@@ -77,6 +79,31 @@ from `motor_test_rig.ioc`.
 5. **Single-press** at any time aborts a running test, or clears the
    fail-indicate cadence and returns to Idle.
 
+## Live logging (CSV over USB)
+
+Every test cycle emits one CSV row over the **same micro-USB cable you
+already use to flash the Nucleo**. The Nucleo's on-board ST-LINK
+exposes the MCU's USART2 (PA2 / PA15) to the host PC as a virtual COM
+port, so plugging the rig in produces `/dev/ttyACM*` on Linux/Mac or
+`COMx` on Windows at **115200 baud, 8N1**.
+
+```
+$ screen /dev/ttyACM0 115200             # or:  minicom -D /dev/ttyACM0 -b 115200
+cycle_id,t_ms,overall_pass,aborted,m0_pass,m0_mean_a,m0_mean_b,m0_mean_c,m0_half_life_ms,...
+1,17392,1,0,1,5012,8047,12089,76,1,4998,8021,12104,78,1,5022,8055,12076,72,1,5005,8038,12092,74
+2,31118,0,0,1,5008,8033,12102,75,1,5015,8045,12087,77,0,4612,7384,11215,71,1,5020,8049,12088,73
+```
+
+`m{0..3}_pass` is the per-motor AND across all four validators. `mean_a/b/c`
+are the mean RPMs over the steady-state portion of each plateau, and
+`half_life_ms` is the coast-down ticks from motor-stop to half-RPM.
+Aborted cycles produce a row with `aborted=1` and zeroed per-motor
+columns.
+
+Pipe to a file for archival (`screen | tee log.csv` or
+`stty -F /dev/ttyACM0 115200 raw && cat /dev/ttyACM0 >> log.csv`) and
+open in Excel — the header line makes the columns self-describing.
+
 ## Module layout
 
 ```
@@ -88,6 +115,7 @@ Core/
 │   ├── led.h            LD3 state (off / solid / slow blink / fast blink)
 │   ├── rpm_stats.h      per-window deviation pass/fail + half-life + composite
 │   ├── test_state.h     Idle / 3 plateaus / SpinDown / Result FSM
+│   ├── trace.h          USART2 CSV logger (one row per cycle)
 │   └── app_config.h     PRD-level tunables in one place
 ├── Src/
 │   ├── dshot.c          TIM1 + DMA TX, IC + DMA RX, calls into dshot_gcr
@@ -96,6 +124,7 @@ Core/
 │   ├── led.c
 │   ├── rpm_stats.c
 │   ├── test_state.c
+│   ├── trace.c          USART2 LL init + CSV row formatter
 │   └── app.c            wires modules together; called from main.c
 tools/
 ├── decode_test.c        host-side round-trip + CRC tests for dshot_gcr

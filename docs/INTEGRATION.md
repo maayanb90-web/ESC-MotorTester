@@ -104,6 +104,33 @@ in any drone motor. **Calibrate against a known-good batch and set
 each to `max(default, 3σ)`** — this is the §8 "process a known-good
 batch" step the PRD always intended.
 
+## Capturing the CSV log
+
+The firmware emits one CSV row per completed test cycle (and one row
+per aborted cycle) over **USART2 → ST-LINK VCP → host USB**. No extra
+cabling: plug the Nucleo into a host PC and the same connector that
+flashes the firmware also surfaces a serial port.
+
+Linux / macOS:
+```sh
+# Find the device. ST-LINK VCPs appear as /dev/ttyACM* on Linux,
+# /dev/cu.usbmodem* on macOS.
+$ dmesg | tail | grep ACM
+# Stream to a capture file while displaying live:
+$ stty -F /dev/ttyACM0 115200 raw -echo
+$ cat /dev/ttyACM0 | tee qa-log-$(date +%Y%m%d).csv
+# Or interactively in screen / minicom / picocom:
+$ screen /dev/ttyACM0 115200
+$ minicom -D /dev/ttyACM0 -b 115200 -C qa-log.cap
+```
+
+Windows: PuTTY → Serial, COM port (Device Manager will show the
+ST-LINK COM), 115200 / 8N1, Session → Logging → "All session output"
+to capture to a file.
+
+The first line is the header; subsequent lines are data rows. Open
+the file in Excel / LibreOffice / `pandas.read_csv` directly.
+
 ## Pass/fail beacons and per-motor failure indication
 
 When the test cycle completes (`TEST_RESULT`), the firmware drives the
