@@ -60,6 +60,15 @@ void DShot_Init(void);
 void DShot_SendAll(uint16_t value, bool request_telem);
 
 /*
+ * Send a distinct DShot value on each channel in the same TX frame.
+ * Used by the per-failed-motor indicate cadence to beep only the
+ * failed channels while keeping the rest silent. The frame structure
+ * is identical to DShot_SendAll's; only the payload per channel differs.
+ */
+void DShot_SendPerChannel(const uint16_t values[APP_NUM_MOTORS],
+                          bool request_telem);
+
+/*
  * Force all channels low (DShot_CMD_MOTOR_STOP). Call this when aborting
  * a test or returning to idle. Safe to call from an ISR.
  */

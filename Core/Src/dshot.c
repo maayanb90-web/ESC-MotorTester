@@ -249,11 +249,10 @@ void DShot_Init(void)
 
 /* ------------------------------ public API -------------------------------- */
 
-void DShot_SendAll(uint16_t value, bool request_telem)
+void DShot_SendPerChannel(const uint16_t values[APP_NUM_MOTORS], bool request_telem)
 {
-    uint16_t frame = dshot_make_frame(value, request_telem, request_telem);
-
     for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        uint16_t frame = dshot_make_frame(values[ch], request_telem, request_telem);
         dshot_expand_frame(s_tx_buf[ch], frame);
         dshot_tx_arm_dma(ch);
     }
@@ -261,6 +260,15 @@ void DShot_SendAll(uint16_t value, bool request_telem)
     /* Realign all 4 channels on the next update event before kicking. */
     LL_TIM_SetCounter(TIM1, 0);
     LL_TIM_EnableCounter(TIM1);
+}
+
+void DShot_SendAll(uint16_t value, bool request_telem)
+{
+    uint16_t values[APP_NUM_MOTORS];
+    for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
+        values[i] = value;
+    }
+    DShot_SendPerChannel(values, request_telem);
 }
 
 void DShot_StopAll(void)

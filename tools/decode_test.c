@@ -247,14 +247,14 @@ static void test_make_frame_bidir_round_trip(void)
 static void test_rpm_stats_all_zero(void)
 {
     /* Every motor reports exactly 0 RPM -> group_mean_rpm == 0 ->
-     * deviation math would divide by zero without the guard added in
-     * rpm_stats.c. */
-    RpmStats_Reset();
+     * deviation math would divide by zero without the guard. */
+    RpmAccumulator s[APP_NUM_MOTORS];
+    RpmStats_Reset(s);
     for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
-        RpmStats_Sample(ch, 0);
+        RpmStats_Sample(s, ch, 0);
     }
     RpmEvalResult r;
-    bool pass = RpmStats_Evaluate(&r);
+    bool pass = RpmStats_Evaluate(s, 50, &r);  /* ±5% */
     CHECK(!pass, "all-zero RPM must not pass");
     CHECK(!r.overall_pass, "overall_pass must be false");
     CHECK(r.group_mean_rpm == 0, "group_mean_rpm should be 0");
@@ -262,18 +262,132 @@ static void test_rpm_stats_all_zero(void)
 
 static void test_rpm_stats_known_good(void)
 {
-    /* Sanity: four motors all spinning at the same RPM -> all pass. */
-    RpmStats_Reset();
+    /* Four motors all spinning at the same RPM -> all pass at ±5 %. */
+    RpmAccumulator s[APP_NUM_MOTORS];
+    RpmStats_Reset(s);
     for (int sample = 0; sample < 100; ++sample) {
         for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
-            RpmStats_Sample(ch, 5000);
+            RpmStats_Sample(s, ch, 5000);
         }
     }
     RpmEvalResult r;
-    bool pass = RpmStats_Evaluate(&r);
+    bool pass = RpmStats_Evaluate(s, 50, &r);
     CHECK(pass, "uniform RPM should pass");
     CHECK(r.overall_pass, "overall_pass should be true");
     CHECK(r.group_mean_rpm == 5000, "group_mean_rpm == 5000");
+}
+
+/* Feed three plateau windows with uniform RPM and confirm all three
+ * sub-evaluations pass and the composite aggregates correctly. */
+static void test_staircase_pass(void)
+{
+    RpmAccumulator s[3][APP_NUM_MOTORS];
+    for (int p = 0; p < 3; ++p) RpmStats_Reset(s[p]);
+
+    static const uint32_t plateau_rpm[3] = { 5000, 8000, 12000 };
+    for (int p = 0; p < 3; ++p) {
+        for (int sample = 0; sample < 50; ++sample) {
+            for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+                RpmStats_Sample(s[p], ch, plateau_rpm[p]);
+            }
+        }
+    }
+
+    CompositeResult r = {0};
+    RpmStats_Evaluate(s[0], 70,  &r.plateau[0]);
+    RpmStats_Evaluate(s[1], 80,  &r.plateau[1]);
+    RpmStats_Evaluate(s[2], 100, &r.plateau[2]);
+
+    /* No spin-down for this test; mark all motors as "passed" on the
+     * spin-down by feeding identical half-life ticks. */
+    static const uint32_t hl[APP_NUM_MOTORS] = { 100, 100, 100, 100 };
+    HalfLife_Evaluate(hl, 200, &r.spin_down);
+
+    Composite_Aggregate(&r);
+    CHECK(r.overall_pass, "uniform staircase should pass overall");
+    for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
+        CHECK(r.per_motor_pass[i],
+              "motor %u should be marked pass", i);
+    }
+}
+
+/* One motor 8 % low only on plateau B -> overall fail, and the failure
+ * surfaces in plateau[1].per_motor[that one].pass. */
+static void test_staircase_one_motor_off(void)
+{
+    RpmAccumulator s[3][APP_NUM_MOTORS];
+    for (int p = 0; p < 3; ++p) RpmStats_Reset(s[p]);
+
+    /* Plateau A: all 5000. Plateau C: all 12000. Plateau B: motor 2
+     * runs 20 % low (6400 vs 8000 on the others). Group mean = 7600;
+     * motor 2 deviates by -15.8 %, well outside ±8.0 %. */
+    for (int sample = 0; sample < 50; ++sample) {
+        for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+            RpmStats_Sample(s[0], ch, 5000);
+            RpmStats_Sample(s[1], ch, ch == 2 ? 6400 : 8000);
+            RpmStats_Sample(s[2], ch, 12000);
+        }
+    }
+
+    CompositeResult r = {0};
+    RpmStats_Evaluate(s[0], 70,  &r.plateau[0]);
+    RpmStats_Evaluate(s[1], 80,  &r.plateau[1]);  /* motor 2 outside ±8% */
+    RpmStats_Evaluate(s[2], 100, &r.plateau[2]);
+
+    static const uint32_t hl[APP_NUM_MOTORS] = { 100, 100, 100, 100 };
+    HalfLife_Evaluate(hl, 200, &r.spin_down);
+
+    Composite_Aggregate(&r);
+    CHECK(!r.overall_pass, "staircase should fail when motor 2 lags");
+    CHECK(!r.per_motor_pass[2], "motor 2 should be flagged");
+    CHECK(r.per_motor_pass[0] && r.per_motor_pass[1] && r.per_motor_pass[3],
+          "other motors should still pass");
+    CHECK(!r.plateau[1].per_motor[2].pass,
+          "the failure should surface in the plateau B sub-result");
+}
+
+static void test_half_life_within_tolerance(void)
+{
+    /* Four motors with half-lives 100/100/110/90 ticks. Max deviation
+     * from the mean of 100 is ±10 % — comfortably inside the default
+     * ±20 % tolerance. */
+    static const uint32_t hl[APP_NUM_MOTORS] = { 100, 100, 110, 90 };
+    RpmEvalResult r;
+    bool pass = HalfLife_Evaluate(hl, 200, &r);
+    CHECK(pass, "in-spec half-lives should pass at ±20 %%");
+    CHECK(r.overall_pass, "overall_pass should be true");
+}
+
+static void test_half_life_one_sticky(void)
+{
+    /* Motor 0 stops twice as fast as the others — clearly outside
+     * ±20 %. */
+    static const uint32_t hl[APP_NUM_MOTORS] = { 50, 100, 100, 100 };
+    RpmEvalResult r;
+    bool pass = HalfLife_Evaluate(hl, 200, &r);
+    CHECK(!pass, "sticky motor should fail half-life check");
+    CHECK(!r.per_motor[0].pass, "motor 0 must be flagged");
+}
+
+static void test_composite_aggregate(void)
+{
+    /* Manually populate per-motor pass flags in each sub-result and
+     * verify Composite_Aggregate ANDs them correctly. */
+    CompositeResult r = {0};
+    /* Every plateau / spin-down passes for motors 0, 1, 3. Motor 2
+     * fails plateau B only. */
+    for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
+        r.plateau[0].per_motor[i].pass = true;
+        r.plateau[1].per_motor[i].pass = (i != 2);
+        r.plateau[2].per_motor[i].pass = true;
+        r.spin_down.per_motor[i].pass  = true;
+    }
+    Composite_Aggregate(&r);
+    CHECK(!r.overall_pass, "one failure must produce overall fail");
+    CHECK(r.per_motor_pass[0], "motor 0 should pass");
+    CHECK(r.per_motor_pass[1], "motor 1 should pass");
+    CHECK(!r.per_motor_pass[2], "motor 2 should fail");
+    CHECK(r.per_motor_pass[3], "motor 3 should pass");
 }
 
 int main(void)
@@ -286,6 +400,11 @@ int main(void)
     test_make_frame_bidir_round_trip();
     test_rpm_stats_all_zero();
     test_rpm_stats_known_good();
+    test_staircase_pass();
+    test_staircase_one_motor_off();
+    test_half_life_within_tolerance();
+    test_half_life_one_sticky();
+    test_composite_aggregate();
 
     printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

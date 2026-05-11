@@ -8,16 +8,6 @@
 
 #define APP_NUM_MOTORS              4
 
-/* PRD §5: 15% throttle => DShot value 307 (in the 48..2047 throttle range). */
-#define APP_THROTTLE_PERCENT        15
-
-/* PRD §5: 10 s total run, skip the first 2 s of telemetry. */
-#define APP_TEST_DURATION_MS        10000U
-#define APP_STARTUP_SKIP_MS         2000U
-
-/* PRD §5: ±5% deviation from the 4-motor mean. */
-#define APP_TOLERANCE_PERCENT       5
-
 /* PRD §4: 14-pole motors. eRPM -> mechanical RPM = eRPM * 2 / poles. */
 #define APP_MOTOR_POLE_COUNT        14
 
@@ -27,6 +17,26 @@
 /* PRD §5: 5 Hz fast-blink while running, 2 Hz slow-blink on failure. */
 #define APP_LED_BLINK_FAST_HZ       5U
 #define APP_LED_BLINK_SLOW_HZ       2U
+
+/* Composite test (v2): staircase of three throttle plateaus + spin-down.
+ * Replaces the single 15%/10s test from PRD §5. Throttle range
+ * 10-40% per bench safety (no-prop Mad 650KV at 6S free-spins to
+ * ~16k RPM at higher throttle). Total run time: 3*3000 + 4000 = 13 s. */
+#define APP_PLATEAU_A_PCT           15U
+#define APP_PLATEAU_B_PCT           25U
+#define APP_PLATEAU_C_PCT           40U
+#define APP_PLATEAU_DURATION_MS     3000U
+#define APP_PLATEAU_SKIP_MS         500U    /* skip startup transient on each plateau */
+#define APP_SPIN_DOWN_DURATION_MS   4000U   /* coast-down telemetry window */
+
+/* Per-phase tolerances in tenths-of-percent (75 = 7.5%). Defaults are
+ * empirical mid-points: tight enough to catch the original PRD failure,
+ * loose enough that normal in-family variance doesn't false-fail.
+ * Calibrate against a known-good batch and set each to max(default, 3σ). */
+#define APP_PLATEAU_A_TOL_PCT_X10   70U     /* ±7.0% */
+#define APP_PLATEAU_B_TOL_PCT_X10   80U     /* ±8.0% */
+#define APP_PLATEAU_C_TOL_PCT_X10   100U    /* ±10.0% — slip noise grows with throttle */
+#define APP_HALF_LIFE_TOL_PCT_X10   200U    /* ±20.0% — bearing variance is wide */
 
 /* DShot300 TX: 300 kbit/s. With TIM1 at 80 MHz, ARR+1 = 267 gives one
  * bit per ~3.34 us. T1H ~= 75% * Tbit, T0H ~= 37.5% * Tbit. */
@@ -46,6 +56,14 @@
 #define APP_BEACON_DURATION_MS      100U
 #define APP_BEACON_PASS_CMD         5U   /* DSHOT_CMD_BEACON5 — ~870 Hz chime */
 #define APP_BEACON_FAIL_CMD         1U   /* DSHOT_CMD_BEACON1 — ~250 Hz buzz  */
+
+/* After the initial 100 ms pass/fail tone, if the test failed the rig
+ * loops a per-motor indicator cadence: 400 ms BEACON1 on each failed
+ * channel + 200 ms silence (MOTOR_STOP) on all channels. The silence
+ * gap re-triggers the ESC's beacon (avoiding anti-repeat lockouts) and
+ * lets the operator count individual chirps if multiple motors failed. */
+#define APP_FAIL_INDICATE_ON_MS     400U
+#define APP_FAIL_INDICATE_OFF_MS    200U
 
 /* DShot300 RX (input capture, after end-of-frame). PSC=7 -> 10 MHz tick
  * (0.1 us); ARR=1500 -> 150 us RX timeout window; nominal bit cell at the

@@ -55,21 +55,27 @@ from `motor_test_rig.ioc`.
 
 1. Mount 4 motors on the rig (no propellers). Wire them to the 4-in-1 ESC.
 2. Power the rig from a 6S LiPo or bench PSU. All motors stay off.
-3. **Double-press** the button → motors spin at 15% throttle for 10 s.
-4. Test ends automatically. LD3 indicates the result:
-   - **Solid ON** = all 4 motors within ±5% of the group mean → batch passes.
-   - **Blinking @ 2 Hz** = at least one motor failed (or no telemetry).
+3. **Double-press** the button → composite test runs for ~13 s:
+   - Plateau A — 3 s at 15 % throttle (low-throttle commutation check)
+   - Plateau B — 3 s at 25 % throttle (mid-range commutation, magnet strength)
+   - Plateau C — 3 s at 40 % throttle (upper-range commutation, winding faults)
+   - Spin-down — 4 s coast-down, measuring each motor's RPM half-life
+     (bearing drag / rotor imbalance)
+4. Test ends automatically. LD3 indicates the overall result:
+   - **Solid ON** = every motor passed all four checks within tolerance.
+   - **Blinking @ 2 Hz** = at least one motor failed at least one check.
 
-   At the same instant, every motor emits a short audible tone (~100 ms)
-   through its windings:
-   - **High chime (~870 Hz)** = batch passed.
-   - **Low buzz (~250 Hz)** = at least one motor failed.
+   At the same instant, the motors emit audible cues:
+   - **All-pass** → ~100 ms high chime (~870 Hz) on every motor, then silence.
+   - **Failure** → after a short low buzz, the **failed motors keep beeping**
+     in a 400 ms-on / 200 ms-off cadence until cleared. Passed motors
+     stay silent.
 
-   The motors hum during the tone but **do not spin**. This is a DShot
-   beacon command (BEACON5 / BEACON1) — the LED behaviour is unchanged
-   from PRD §5; the audible tone is an added affordance so the operator
-   doesn't need to watch the rig.
-5. **Single-press** at any time aborts a running test, or clears the result.
+   The motors hum (and visibly vibrate) during a tone but **do not spin**.
+   The tester walks up to the rig, hears and sees exactly which motors
+   are buzzing, pulls those motors from the batch, and clears the result.
+5. **Single-press** at any time aborts a running test, or clears the
+   fail-indicate cadence and returns to Idle.
 
 ## Module layout
 
@@ -80,8 +86,8 @@ Core/
 │   ├── dshot_gcr.h      pure 5b/4b GCR decoder (host-testable)
 │   ├── button.h         debounced single/double-press detection
 │   ├── led.h            LD3 state (off / solid / slow blink / fast blink)
-│   ├── rpm_stats.h      ±5% deviation pass/fail
-│   ├── test_state.h     Idle / Running / Result state machine
+│   ├── rpm_stats.h      per-window deviation pass/fail + half-life + composite
+│   ├── test_state.h     Idle / 3 plateaus / SpinDown / Result FSM
 │   └── app_config.h     PRD-level tunables in one place
 ├── Src/
 │   ├── dshot.c          TIM1 + DMA TX, IC + DMA RX, calls into dshot_gcr
@@ -106,10 +112,11 @@ make -C tools test
 ```
 
 Fixtures can be patched in from logic-analyzer captures by editing
-`tools/decode_test.c`. The expected output is `34 passed, 0 failed`
+`tools/decode_test.c`. The expected output is `52 passed, 0 failed`
 (GCR round-trip, CRC corruption, motor-stopped sentinel, eRPM math
-edge cases, bidir-frame CRC round-trip, RPM-stats all-zero, RPM-stats
-known-good).
+edge cases, bidir-frame CRC round-trip, RPM-stats all-zero,
+RPM-stats known-good, staircase pass / one-motor-off, half-life
+within tolerance / one-sticky, composite aggregation).
 
 ## Tunables
 
@@ -117,15 +124,23 @@ All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 
 | Symbol                       | Value | Notes                                 |
 |------------------------------|-------|---------------------------------------|
-| `APP_THROTTLE_PERCENT`       | 15    | PRD §5                                |
-| `APP_TEST_DURATION_MS`       | 10000 | PRD §5                                |
-| `APP_STARTUP_SKIP_MS`        | 2000  | PRD §5                                |
-| `APP_TOLERANCE_PERCENT`      | 5     | PRD §5                                |
 | `APP_MOTOR_POLE_COUNT`       | 14    | PRD §5                                |
 | `APP_DOUBLE_PRESS_WINDOW_MS` | 400   | PRD §5 / §8                           |
-| `APP_BEACON_DURATION_MS`     | 100   | Beyond PRD — beacon hold (>6 frames) |
-| `APP_BEACON_PASS_CMD`        | 5     | Beyond PRD — `DSHOT_CMD_BEACON5` chime |
-| `APP_BEACON_FAIL_CMD`        | 1     | Beyond PRD — `DSHOT_CMD_BEACON1` buzz |
+| `APP_PLATEAU_A_PCT`          | 15    | v2 composite — low-throttle plateau (% of full DShot range) |
+| `APP_PLATEAU_B_PCT`          | 25    | v2 composite — mid plateau |
+| `APP_PLATEAU_C_PCT`          | 40    | v2 composite — upper plateau (kept ≤ 40 % for no-prop safety) |
+| `APP_PLATEAU_DURATION_MS`    | 3000  | Per plateau, including the startup-skip window |
+| `APP_PLATEAU_SKIP_MS`        | 500   | Transient skipped at the start of each plateau |
+| `APP_SPIN_DOWN_DURATION_MS`  | 4000  | Coast-down telemetry window for the half-life check |
+| `APP_PLATEAU_A_TOL_PCT_X10`  | 70    | ±7.0 % — see "On the tolerance choice" in plan doc |
+| `APP_PLATEAU_B_TOL_PCT_X10`  | 80    | ±8.0 % |
+| `APP_PLATEAU_C_TOL_PCT_X10`  | 100   | ±10.0 % — slip noise grows with throttle |
+| `APP_HALF_LIFE_TOL_PCT_X10`  | 200   | ±20.0 % — bearing variance is wide |
+| `APP_BEACON_DURATION_MS`     | 100   | Initial overall pass/fail tone |
+| `APP_BEACON_PASS_CMD`        | 5     | `DSHOT_CMD_BEACON5` — high chime |
+| `APP_BEACON_FAIL_CMD`        | 1     | `DSHOT_CMD_BEACON1` — low buzz |
+| `APP_FAIL_INDICATE_ON_MS`    | 400   | Per-failed-motor beep on-duration |
+| `APP_FAIL_INDICATE_OFF_MS`   | 200   | Silence between beeps (re-triggers ESC beacon) |
 | `APP_DSHOT_RX_BIT_TICKS`     | 33    | RX bit cell @ 10 MHz tick (3.33 µs)   |
 | `APP_DSHOT_RX_PSC`           | 7     | TIM1 prescaler during RX → 10 MHz     |
 | `APP_DSHOT_RX_ARR`           | 1500  | TIM1 ARR during RX → 150 µs timeout   |

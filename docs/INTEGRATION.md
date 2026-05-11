@@ -77,20 +77,60 @@ When bringing the RX path up against real hardware, work in this order:
 
 6. **Negative test**: pull one signal wire during a run → blink + buzz.
 
-## Pass/fail beacon
+## Composite test (staircase + spin-down)
 
-When the test cycle completes, the firmware drives the motor windings as
-piezo speakers for ~100 ms via DShot beacon commands. Configured in
-`Core/Inc/app_config.h`:
+The test cycle has five sub-phases driven from the 1 kHz SysTick (see
+`Core/Src/test_state.c::TestState_Tick`):
+
+| Phase            | Throttle | Duration | Captures |
+|------------------|----------|----------|----------|
+| `TEST_PLATEAU_A` | 15 %     | 3 s      | mean RPM per motor |
+| `TEST_PLATEAU_B` | 25 %     | 3 s      | mean RPM per motor |
+| `TEST_PLATEAU_C` | 40 %     | 3 s      | mean RPM per motor + threshold for spin-down |
+| `TEST_SPIN_DOWN` | 0 %      | 4 s      | tick at which each motor crosses half its plateau-C mean |
+| `TEST_RESULT`    | beacon   | until cleared | overall pass/fail + per-motor cadence on fail |
+
+Each plateau skips the first 500 ms (`APP_PLATEAU_SKIP_MS`) so the
+startup transient doesn't pollute the steady-state mean. All five
+phases use bidir DShot300 frames so `dshot_decode_rx` keeps feeding
+`s_telem[ch]` even during coast-down.
+
+The per-phase tolerances live in `Core/Inc/app_config.h` in
+tenths-of-percent (e.g. `APP_PLATEAU_A_TOL_PCT_X10 = 70` means
+±7.0 %). Defaults grow with throttle (7 / 8 / 10 %) because slip and
+commutation noise grow with RPM; the half-life check uses ±20 %
+because bearing variance is the largest natural defect-free variation
+in any drone motor. **Calibrate against a known-good batch and set
+each to `max(default, 3σ)`** — this is the §8 "process a known-good
+batch" step the PRD always intended.
+
+## Pass/fail beacons and per-motor failure indication
+
+When the test cycle completes (`TEST_RESULT`), the firmware drives the
+motor windings as piezo speakers via DShot beacon commands. Configured
+in `Core/Inc/app_config.h`:
 
 - `APP_BEACON_PASS_CMD` — currently `5` (`DSHOT_CMD_BEACON5`, ~870 Hz).
 - `APP_BEACON_FAIL_CMD` — currently `1` (`DSHOT_CMD_BEACON1`, ~250 Hz).
 - `APP_BEACON_DURATION_MS` — currently `100`. Must be ≥ 6 frames at
   the SysTick rate (BLHeli's documented minimum-consecutive-frames
-  requirement); the value here gives ~16× margin.
+  requirement).
+- `APP_FAIL_INDICATE_ON_MS` / `APP_FAIL_INDICATE_OFF_MS` — currently
+  `400` / `200`. Duty cycle of the per-motor fail cadence.
 
-Played from `Core/Src/test_state.c::TestState_Tick` inside the
-`TEST_RESULT` case. The motors **hum but do not spin** during playback
-— don't confuse the audible humming with a runaway motor. Swap the
-PASS/FAIL command numbers in `app_config.h` if the bench iteration
-turns up a preference for different pitches.
+Behaviour:
+
+- **Pass** — every motor emits a single ~100 ms high chime, then the
+  rig is silent. LD3 stays solid. Single-press → Idle.
+- **Fail** — for the first ~100 ms only the *failed* motors emit the
+  low buzz; passed motors stay silent (instant identification at
+  test completion). After that the rig loops a 400 ms-on / 200 ms-off
+  cadence indefinitely on the failed channels only. LD3 stays in
+  2 Hz slow blink. The operator hears and visibly sees which motors
+  are vibrating, pulls them, and single-presses to clear → Idle.
+
+The motors **hum but do not spin** during any beacon — the DShot
+beacon command vibrates the windings without driving the rotor. The
+per-channel TX path is `Core/Src/dshot.c::DShot_SendPerChannel`;
+`DShot_SendAll` is now a thin wrapper that fills the per-channel
+array with a single value.
