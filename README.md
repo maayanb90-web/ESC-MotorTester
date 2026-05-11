@@ -28,8 +28,7 @@ This project is laid out as an **STM32CubeIDE** workspace.
 1. Install [STM32CubeIDE](https://www.st.com/en/development-tools/stm32cubeide.html) 1.13+ and the **STM32CubeL4** package (auto-fetched on first build).
 2. `File → Open Projects from File System…` and select this directory.
 3. Right-click `motor_test_rig.ioc` → **Generate Code**. This populates `Drivers/` (HAL/LL/CMSIS), the linker script, the startup file, and `system_stm32l4xx.c`. The hand-written sources under `Core/Src` and `Core/Inc` are preserved (CubeMX keeps everything inside `USER CODE BEGIN`/`USER CODE END` markers).
-4. Follow the post-generation steps in [`docs/INTEGRATION.md`](docs/INTEGRATION.md) (one-time: wire `App_Tick()` into `SysTick_Handler`, disable the CubeMX `MX_*_Init` calls we replace).
-5. Build (Hammer icon) and flash via the on-board ST-LINK (`Run` button).
+4. Build (Hammer icon) and flash via the on-board ST-LINK (`Run` button). No manual post-generation edits are required — the SysTick wiring and IRQ ownership are already baked into `Core/Src/stm32l4xx_it.c` and the `.ioc`. See [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the design rationale and the DShot RX bring-up checklist.
 
 Vendor drivers are intentionally **not committed**; they are regenerated
 from `motor_test_rig.ioc`.
