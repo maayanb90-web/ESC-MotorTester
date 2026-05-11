@@ -20,6 +20,7 @@ typedef enum {
     BUTTON_EVENT_NONE   = 0,
     BUTTON_EVENT_SINGLE,
     BUTTON_EVENT_DOUBLE,
+    BUTTON_EVENT_TRIPLE,
 } ButtonEvent;
 
 void        Button_Init(void);

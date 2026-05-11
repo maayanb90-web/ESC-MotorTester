@@ -14,6 +14,7 @@
  * the FIXTURE_* arrays for spot-checks against the real ESC.
  */
 
+#include "../Core/Inc/calibration.h"
 #include "../Core/Inc/dshot_gcr.h"
 #include "../Core/Inc/rpm_stats.h"
 
@@ -369,6 +370,117 @@ static void test_half_life_one_sticky(void)
     CHECK(!r.per_motor[0].pass, "motor 0 must be flagged");
 }
 
+static void test_isqrt(void)
+{
+    CHECK(Calibration_ISqrt(0) == 0, "isqrt(0) == 0");
+    CHECK(Calibration_ISqrt(1) == 1, "isqrt(1) == 1");
+    CHECK(Calibration_ISqrt(4) == 2, "isqrt(4) == 2");
+    CHECK(Calibration_ISqrt(100) == 10, "isqrt(100) == 10");
+    CHECK(Calibration_ISqrt(10000) == 100, "isqrt(10000) == 100");
+    /* isqrt floors. 99 -> 9, 24 -> 4. */
+    CHECK(Calibration_ISqrt(99) == 9, "isqrt(99) floors to 9");
+    CHECK(Calibration_ISqrt(24) == 4, "isqrt(24) floors to 4");
+    /* High-bit smoke test. 0xFFFFFFFF is just under 2^32; sqrt ~ 65535. */
+    uint32_t big = Calibration_ISqrt(0xFFFFFFFFULL);
+    CHECK(big == 65535U, "isqrt(0xFFFFFFFF) == 65535 (got %u)", big);
+}
+
+/* Helper: build a CompositeResult with every motor on every plateau
+ * deviating by `dev_x10` (signed, tenths of a percent) from the group.
+ * Plateau / spin-down `per_motor[i].deviation_pct_x10` is the only field
+ * that calibration reads. */
+static void synth_result(CompositeResult *r, int32_t dev_x10)
+{
+    memset(r, 0, sizeof(*r));
+    for (uint8_t p = 0; p < 3; ++p) {
+        for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
+            r->plateau[p].per_motor[i].deviation_pct_x10 = dev_x10;
+        }
+    }
+    for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
+        r->spin_down.per_motor[i].deviation_pct_x10 = dev_x10;
+    }
+}
+
+static void test_calibration_zero_variance(void)
+{
+    /* Every motor exactly on the group mean -> sigma == 0 -> recommended
+     * stays at the default floor. */
+    Calibration_Reset();
+    CompositeResult r;
+    synth_result(&r, 0);
+    for (int c = 0; c < 5; ++c) {
+        Calibration_FoldCycle(&r);
+    }
+    CalibrationSummary s;
+    Calibration_Summarize(&s);
+
+    CHECK(s.n_cycles == 5, "n_cycles == 5 (got %u)", s.n_cycles);
+    CHECK(s.n_samples_per_phase == 5U * APP_NUM_MOTORS,
+          "samples/phase == 20 (got %u)", s.n_samples_per_phase);
+    for (uint8_t p = 0; p < CALIBRATION_NUM_PHASES; ++p) {
+        CHECK(s.sigma_pct_x10[p] == 0,
+              "phase %u sigma must be 0 (got %u)", p, s.sigma_pct_x10[p]);
+        CHECK(s.recommended_pct_x10[p] == s.default_pct_x10[p],
+              "phase %u recommended must equal default (rec=%u def=%u)",
+              p, s.recommended_pct_x10[p], s.default_pct_x10[p]);
+    }
+}
+
+static void test_calibration_three_sigma_above_default(void)
+{
+    /* Each cycle, all 4 motors deviate by +50 tenths-of-pct on every
+     * plateau. Variance = sum(dev^2)/n = 2500. sigma = 50. 3 sigma = 150
+     * which exceeds the plateau-A/B defaults (70/80) but not C/HL
+     * (100/200). So recommended[A] = 150, recommended[B] = 150,
+     * recommended[C] = 150 (max(100, 150)), recommended[HL] = 200
+     * (max(200, 150)). */
+    Calibration_Reset();
+    CompositeResult r;
+    synth_result(&r, 50);
+    for (int c = 0; c < 10; ++c) {
+        Calibration_FoldCycle(&r);
+    }
+    CalibrationSummary s;
+    Calibration_Summarize(&s);
+
+    CHECK(s.sigma_pct_x10[CALIBRATION_PHASE_A] == 50,
+          "sigma_A == 50 (got %u)", s.sigma_pct_x10[CALIBRATION_PHASE_A]);
+    CHECK(s.recommended_pct_x10[CALIBRATION_PHASE_A] == 150,
+          "recommended_A == 150 (got %u)",
+          s.recommended_pct_x10[CALIBRATION_PHASE_A]);
+    CHECK(s.recommended_pct_x10[CALIBRATION_PHASE_B] == 150,
+          "recommended_B == 150 (got %u)",
+          s.recommended_pct_x10[CALIBRATION_PHASE_B]);
+    CHECK(s.recommended_pct_x10[CALIBRATION_PHASE_C] == 150,
+          "recommended_C == 150 (got %u)",
+          s.recommended_pct_x10[CALIBRATION_PHASE_C]);
+    CHECK(s.recommended_pct_x10[CALIBRATION_PHASE_HALF_LIFE] == 200,
+          "recommended_HL == 200 (held by default, got %u)",
+          s.recommended_pct_x10[CALIBRATION_PHASE_HALF_LIFE]);
+}
+
+static void test_calibration_known_variance(void)
+{
+    /* Mix two cycle types: one with all +30, one with all -30.
+     * sum_sq per phase = 8 * (30^2) = 7200; n = 8;
+     * variance = 7200/8 = 900; sigma = 30; 3 sigma = 90. */
+    Calibration_Reset();
+    CompositeResult r_plus, r_minus;
+    synth_result(&r_plus, +30);
+    synth_result(&r_minus, -30);
+    Calibration_FoldCycle(&r_plus);
+    Calibration_FoldCycle(&r_minus);
+    CalibrationSummary s;
+    Calibration_Summarize(&s);
+
+    CHECK(s.n_cycles == 2, "n_cycles == 2 (got %u)", s.n_cycles);
+    for (uint8_t p = 0; p < CALIBRATION_NUM_PHASES; ++p) {
+        CHECK(s.sigma_pct_x10[p] == 30,
+              "phase %u sigma == 30 (got %u)", p, s.sigma_pct_x10[p]);
+    }
+}
+
 static void test_composite_aggregate(void)
 {
     /* Manually populate per-motor pass flags in each sub-result and
@@ -405,6 +517,10 @@ int main(void)
     test_half_life_within_tolerance();
     test_half_life_one_sticky();
     test_composite_aggregate();
+    test_isqrt();
+    test_calibration_zero_variance();
+    test_calibration_three_sigma_above_default();
+    test_calibration_known_variance();
 
     printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

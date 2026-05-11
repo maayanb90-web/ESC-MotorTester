@@ -5,7 +5,7 @@ CC      ?= cc
 CFLAGS  ?= -std=c11 -Wall -Wextra -Werror -O2 -g
 INCLUDES = -I../Core/Inc
 
-SRCS = ../Core/Src/dshot_gcr.c ../Core/Src/rpm_stats.c decode_test.c
+SRCS = ../Core/Src/dshot_gcr.c ../Core/Src/rpm_stats.c ../Core/Src/calibration.c decode_test.c
 BIN  = decode_test
 
 $(BIN): $(SRCS)

@@ -103,8 +103,9 @@ void Button_Tick(void)
             s_state          = BTN_DEBOUNCE_PRESS;
             s_state_timer_ms = 0;
         } else if (++s_window_timer_ms >= APP_DOUBLE_PRESS_WINDOW_MS) {
-            s_pending     = (s_press_count >= 2) ? BUTTON_EVENT_DOUBLE
-                                                 : BUTTON_EVENT_SINGLE;
+            if      (s_press_count >= 3) s_pending = BUTTON_EVENT_TRIPLE;
+            else if (s_press_count == 2) s_pending = BUTTON_EVENT_DOUBLE;
+            else                         s_pending = BUTTON_EVENT_SINGLE;
             s_press_count = 0;
             s_state       = BTN_IDLE;
         }

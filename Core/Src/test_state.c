@@ -2,6 +2,7 @@
 
 #include "app_config.h"
 #include "button.h"
+#include "calibration.h"
 #include "dshot.h"
 #include "led.h"
 #include "main.h"          /* HAL_GetTick for trace timestamps */
@@ -30,7 +31,14 @@ static uint32_t            s_cycle_id    = 0;
 /* True while a test cycle is in flight (between enter_plateau_a and
  * either enter_result or enter_idle-on-abort). Distinguishes mid-test
  * abort from the operator clearing a finished cycle. */
-static bool                s_active_run  = false;
+static bool                s_active_run         = false;
+/* Auto-calibration: when active, enter_result folds the cycle into the
+ * Calibration accumulators and loops back to plateau A until N cycles
+ * have completed; only then does the summary print and we transition to
+ * TEST_CALIBRATION_DONE. Single-press during a calibration aborts the
+ * whole run (no summary). */
+static bool                s_calibration_active = false;
+static uint32_t            s_calibration_cycle  = 0;
 
 /* ------------------------------ transitions -------------------------------- */
 
@@ -45,6 +53,11 @@ static void enter_idle(void)
         Trace_PrintResult(NULL, ++s_cycle_id, HAL_GetTick(), true);
         s_active_run = false;
     }
+    /* A mid-calibration abort drops the summary entirely. The cycles
+     * already emitted are still in the host log; the operator can
+     * compute sigma offline if needed. */
+    s_calibration_active = false;
+    s_calibration_cycle  = 0;
 
     s_phase       = TEST_IDLE;
     s_phase_ticks = 0;
@@ -106,9 +119,42 @@ static void enter_result(void)
     Trace_PrintResult(&s_last_result, ++s_cycle_id, HAL_GetTick(), false);
     s_active_run = false;
 
+    if (s_calibration_active) {
+        /* Fold this cycle's deviations into the calibration
+         * accumulators. If more cycles remain, loop straight back into
+         * plateau A without entering the TEST_RESULT beacon phase.
+         * Otherwise summarise and emit the recommendation block. */
+        Calibration_FoldCycle(&s_last_result);
+        s_calibration_cycle++;
+
+        if (s_calibration_cycle < APP_CALIBRATION_CYCLES) {
+            enter_plateau_a();
+            return;
+        }
+
+        CalibrationSummary summary;
+        Calibration_Summarize(&summary);
+        Trace_PrintCalibration(&summary);
+
+        s_calibration_active = false;
+        s_calibration_cycle  = 0;
+        Led_SetMode(LED_SOLID_ON);
+        s_phase       = TEST_CALIBRATION_DONE;
+        s_phase_ticks = 0;
+        return;
+    }
+
     Led_SetMode(s_last_result.overall_pass ? LED_SOLID_ON : LED_BLINK_SLOW);
     s_phase       = TEST_RESULT;
     s_phase_ticks = 0;
+}
+
+static void enter_calibration(void)
+{
+    Calibration_Reset();
+    s_calibration_active = true;
+    s_calibration_cycle  = 0;
+    enter_plateau_a();   /* sets LED, s_active_run, etc. */
 }
 
 /* --------------------------- tick helpers ---------------------------------- */
@@ -207,6 +253,8 @@ void TestState_Tick(void)
     case TEST_IDLE:
         if (evt == BUTTON_EVENT_DOUBLE) {
             enter_plateau_a();
+        } else if (evt == BUTTON_EVENT_TRIPLE) {
+            enter_calibration();
         }
         break;
 
@@ -237,6 +285,12 @@ void TestState_Tick(void)
     case TEST_RESULT:
         drive_result_tick();
         s_phase_ticks++;
+        break;
+
+    case TEST_CALIBRATION_DONE:
+        /* LD3 solid, motors silent. Wait for the operator to clear
+         * with a single press. The SINGLE-press handler above already
+         * does enter_idle() so we have nothing to do here. */
         break;
     }
 }

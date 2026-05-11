@@ -78,6 +78,15 @@ from `motor_test_rig.ioc`.
    are buzzing, pulls those motors from the batch, and clears the result.
 5. **Single-press** at any time aborts a running test, or clears the
    fail-indicate cadence and returns to Idle.
+6. **Triple-press** from Idle starts an **auto-calibration** run: the
+   rig executes `APP_CALIBRATION_CYCLES` (default 20) composite cycles
+   back-to-back on a known-good batch, then emits a recommended-
+   tolerance summary line over the CSV log. Each cycle still produces
+   its normal CSV row, so the raw data is captured too. After the
+   summary, LD3 goes solid; single-press to clear. Operator pastes
+   the four recommended `APP_*_TOL_PCT_X10` values into `app_config.h`
+   and rebuilds — that's the §8 "process a known-good batch and set
+   max(default, 3 sigma)" workflow, automated.
 
 ## Live logging (CSV over USB)
 
@@ -116,6 +125,7 @@ Core/
 │   ├── rpm_stats.h      per-window deviation pass/fail + half-life + composite
 │   ├── test_state.h     Idle / 3 plateaus / SpinDown / Result FSM
 │   ├── trace.h          USART2 CSV logger (one row per cycle)
+│   ├── calibration.h    auto-calibration sigma + recommended tolerances
 │   └── app_config.h     PRD-level tunables in one place
 ├── Src/
 │   ├── dshot.c          TIM1 + DMA TX, IC + DMA RX, calls into dshot_gcr
@@ -125,6 +135,7 @@ Core/
 │   ├── rpm_stats.c
 │   ├── test_state.c
 │   ├── trace.c          USART2 LL init + CSV row formatter
+│   ├── calibration.c    Welford sigma + isqrt + recommended tolerances
 │   └── app.c            wires modules together; called from main.c
 tools/
 ├── decode_test.c        host-side round-trip + CRC tests for dshot_gcr
@@ -141,11 +152,12 @@ make -C tools test
 ```
 
 Fixtures can be patched in from logic-analyzer captures by editing
-`tools/decode_test.c`. The expected output is `52 passed, 0 failed`
+`tools/decode_test.c`. The expected output is `80 passed, 0 failed`
 (GCR round-trip, CRC corruption, motor-stopped sentinel, eRPM math
 edge cases, bidir-frame CRC round-trip, RPM-stats all-zero,
 RPM-stats known-good, staircase pass / one-motor-off, half-life
-within tolerance / one-sticky, composite aggregation).
+within tolerance / one-sticky, composite aggregation, integer
+square root, calibration zero/known/3-sigma scenarios).
 
 ## Tunables
 
@@ -165,6 +177,7 @@ All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 | `APP_PLATEAU_B_TOL_PCT_X10`  | 80    | ±8.0 % |
 | `APP_PLATEAU_C_TOL_PCT_X10`  | 100   | ±10.0 % — slip noise grows with throttle |
 | `APP_HALF_LIFE_TOL_PCT_X10`  | 200   | ±20.0 % — bearing variance is wide |
+| `APP_CALIBRATION_CYCLES`     | 20    | Cycles run on triple-press calibration (~4-5 min) |
 | `APP_BEACON_DURATION_MS`     | 100   | Initial overall pass/fail tone |
 | `APP_BEACON_PASS_CMD`        | 5     | `DSHOT_CMD_BEACON5` — high chime |
 | `APP_BEACON_FAIL_CMD`        | 1     | `DSHOT_CMD_BEACON1` — low buzz |

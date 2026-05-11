@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "calibration.h"
 #include "rpm_stats.h"
 
 /*
@@ -15,7 +16,8 @@
  * 115200 — comfortably inside the TEST_RESULT phase budget).
  *
  * Format: CSV, one header line at boot, one data row per completed
- * test cycle. Aborted cycles get a row with aborted=1.
+ * test cycle. Aborted cycles get a row with aborted=1. Calibration
+ * summaries are emitted as `#`-prefixed comment lines.
  */
 
 void Trace_Init(void);
@@ -24,5 +26,6 @@ void Trace_PrintResult(const CompositeResult *r,
                        uint32_t cycle_id,
                        uint32_t t_ms,
                        bool     aborted);
+void Trace_PrintCalibration(const CalibrationSummary *s);
 
 #endif /* TRACE_H */

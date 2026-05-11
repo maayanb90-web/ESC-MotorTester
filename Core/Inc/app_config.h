@@ -64,6 +64,13 @@
 #define APP_BEACON_PASS_CMD         5U   /* DSHOT_CMD_BEACON5 — ~870 Hz chime */
 #define APP_BEACON_FAIL_CMD         1U   /* DSHOT_CMD_BEACON1 — ~250 Hz buzz  */
 
+/* Auto-calibration: triple-press from Idle runs this many composite
+ * cycles back-to-back on a known-good batch, then prints recommended
+ * per-phase tolerances over the CSV log. 20 cycles takes ~4-5 min and
+ * gives 80 samples per phase (4 motors x 20 cycles) for the sigma
+ * estimate. */
+#define APP_CALIBRATION_CYCLES      20U
+
 /* After the initial 100 ms pass/fail tone, if the test failed the rig
  * loops a per-motor indicator cadence: 400 ms BEACON1 on each failed
  * channel + 200 ms silence (MOTOR_STOP) on all channels. The silence

@@ -131,6 +131,32 @@ to capture to a file.
 The first line is the header; subsequent lines are data rows. Open
 the file in Excel / LibreOffice / `pandas.read_csv` directly.
 
+## Auto-calibration (triple-press)
+
+From Idle, a triple-press launches an unattended calibration run:
+
+1. The rig executes `APP_CALIBRATION_CYCLES` (default 20) composite
+   cycles back-to-back. Each cycle emits its normal CSV data row so
+   the raw deviations are captured.
+2. After the last cycle, the rig prints two `#`-prefixed comment
+   lines: the per-phase sigma values and a copy-pastable
+   `APP_*_TOL_PCT_X10` block.
+3. LD3 goes solid; single-press clears.
+
+Example output (sigma_x10 / recommend_x10 in tenths-of-percent):
+
+```
+# CALIBRATION n=20 samples/phase=80  sigma_x10 = a:23 b:31 c:48 hl:142  recommend_x10 = a:70 b:93 c:144 hl:426
+# RECOMMEND   APP_PLATEAU_A_TOL_PCT_X10=70  APP_PLATEAU_B_TOL_PCT_X10=93  APP_PLATEAU_C_TOL_PCT_X10=144  APP_HALF_LIFE_TOL_PCT_X10=426
+```
+
+Each recommended value is `max(default, 3*sigma)` so a quieter-than-
+expected batch never tightens below the conservative starting floor.
+Paste the four numbers into `Core/Inc/app_config.h` and rebuild.
+
+Single-press during calibration aborts the run — the partial CSV
+rows are still in the host log, but no summary is emitted.
+
 ## Pass/fail beacons and per-motor failure indication
 
 When the test cycle completes (`TEST_RESULT`), the firmware drives the

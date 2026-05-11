@@ -31,6 +31,7 @@ typedef enum {
     TEST_PLATEAU_C,
     TEST_SPIN_DOWN,
     TEST_RESULT,
+    TEST_CALIBRATION_DONE,
 } TestPhase;
 
 void                        TestState_Init(void);
