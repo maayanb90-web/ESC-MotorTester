@@ -14,12 +14,30 @@ See [`docs/motor_test_rig_prd.md`](docs/motor_test_rig_prd.md) for the full PRD.
 | DShot CH2      | PA9   | TIM1_CH2 (AF1)    |
 | DShot CH3      | PA10  | TIM1_CH3 (AF1)    |
 | DShot CH4      | PA11  | TIM1_CH4 (AF1)    |
-| Button         | PA0   | GPIO input, pull-up, EXTI0 |
+| Button         | PA0   | GPIO input, internal pull-up, polled @ 1 kHz |
 | Status LED LD3 | PB3   | GPIO output (active high) |
 | SWD            | PA13/PA14 | reserved      |
 
 All 4 DShot channels share TIM1, which guarantees sub-cycle synchronization
 across the 4 ESC signal lines.
+
+## Wiring
+
+**4-in-1 ESC:** signal lines for motors 1-4 → PA8, PA9, PA10, PA11
+respectively. GND of the ESC must be tied to the Nucleo's GND. Power
+the ESC from the 6S LiPo / bench PSU; do **not** back-feed the Nucleo
+from the ESC's BEC.
+
+**Button:** a 2-pin momentary SPST tactile push-button — the kind where
+the two legs are shorted together when the button is pressed — wired
+between **PA0 and GND**. Either leg can go to either side; the part is
+non-polar. No external pull-up or current-limiting resistor is needed:
+the STM32 drives PA0 with its internal pull-up (~30-50 kΩ) and the
+firmware reads "pressed" as PA0 LOW. The 1 kHz debounce in
+`Core/Src/button.c` swallows ≤20 ms of contact bounce.
+
+**Status LED:** LD3 is the on-board green LED on the Nucleo-L432KC
+(PB3). No wiring needed.
 
 ## Build & flash
 

@@ -33,9 +33,18 @@ static volatile uint16_t    s_window_timer_ms = 0;
 static volatile uint8_t     s_press_count     = 0;
 static volatile ButtonEvent s_pending         = BUTTON_EVENT_NONE;
 
+/*
+ * Hardware: a 2-pin momentary SPST tactile push-button is wired between
+ * PA0 and GND. STM32's internal pull-up (~30-50 kΩ) holds PA0 HIGH when
+ * the button is open; pressing shorts the two legs together, pulling
+ * PA0 LOW. No external pull-up or current-limiting resistor required.
+ * The two legs of a 2-pin tactile switch are interchangeable — either
+ * one can go to PA0 and either one can go to GND.
+ */
+
 static bool button_is_down(void)
 {
-    /* Active-low: pressed when the input reads 0. */
+    /* Active-low: pressed when the input reads 0 (legs shorted to GND). */
     return LL_GPIO_IsInputPinSet(BTN_PORT, BTN_PIN) == 0;
 }
 
