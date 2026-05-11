@@ -29,6 +29,15 @@
 
 /* Special low-throttle commands (DShot value < 48). */
 #define DSHOT_CMD_MOTOR_STOP   0U
+/* Beacons drive the motor windings as a piezo speaker; the motor hums
+ * but does not spin. BEACON1 is the lowest pitch (~250 Hz), BEACON5 the
+ * highest (~870 Hz). BLHeli requires >=6 consecutive frames before the
+ * ESC acts on a command. */
+#define DSHOT_CMD_BEACON1      1U
+#define DSHOT_CMD_BEACON2      2U
+#define DSHOT_CMD_BEACON3      3U
+#define DSHOT_CMD_BEACON4      4U
+#define DSHOT_CMD_BEACON5      5U
 
 typedef struct {
     bool     valid;       /* true if a fresh telemetry frame was decoded */

@@ -34,6 +34,14 @@
 #define APP_DSHOT_T1H               200U   /* CCR for a logical 1 */
 #define APP_DSHOT_T0H               100U   /* CCR for a logical 0 */
 
+/* Audible pass/fail feedback via DShot beacons (motor-as-speaker).
+ * Played at the start of the TEST_RESULT phase. High pitch = pass,
+ * low pitch = fail. BLHeli requires >=6 consecutive frames before
+ * acting; 100 frames at 1 kHz is comfortably above the minimum. */
+#define APP_BEACON_DURATION_MS      100U
+#define APP_BEACON_PASS_CMD         DSHOT_CMD_BEACON5  /* ~870 Hz chime */
+#define APP_BEACON_FAIL_CMD         DSHOT_CMD_BEACON1  /* ~250 Hz buzz  */
+
 /* DShot300 RX (input capture, after end-of-frame). PSC=7 -> 10 MHz tick
  * (0.1 us); ARR=1500 -> 150 us RX timeout window; nominal bit cell at the
  * same 300 kbit/s rate -> 33 ticks. Decoder samples mid-cell so it

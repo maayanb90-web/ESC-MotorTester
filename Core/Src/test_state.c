@@ -97,6 +97,17 @@ void TestState_Tick(void)
     }
 
     case TEST_RESULT:
+        /* Audible pass/fail tone via DShot beacon. The ESC drives the
+         * motor windings as a speaker; the motors hum but do not spin.
+         * We hold the command line for APP_BEACON_DURATION_MS to clear
+         * the BLHeli >=6-frame minimum with margin, then go silent. */
+        if (s_phase_ticks < APP_BEACON_DURATION_MS) {
+            const uint16_t beacon = s_last_result.overall_pass
+                                        ? APP_BEACON_PASS_CMD
+                                        : APP_BEACON_FAIL_CMD;
+            DShot_SendAll(beacon, true);
+            s_phase_ticks++;
+        }
         if (evt == BUTTON_EVENT_SINGLE) {
             enter_idle();
         }
