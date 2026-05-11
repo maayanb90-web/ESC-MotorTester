@@ -37,10 +37,15 @@
 /* Audible pass/fail feedback via DShot beacons (motor-as-speaker).
  * Played at the start of the TEST_RESULT phase. High pitch = pass,
  * low pitch = fail. BLHeli requires >=6 consecutive frames before
- * acting; 100 frames at 1 kHz is comfortably above the minimum. */
+ * acting; 100 frames at 1 kHz is comfortably above the minimum.
+ *
+ * Values are the raw DShot command codes so this header doesn't have
+ * to pull in dshot.h (which would be circular: dshot.h includes us).
+ * If you change them, keep them aligned with DSHOT_CMD_BEACON{1..5}
+ * in Core/Inc/dshot.h. */
 #define APP_BEACON_DURATION_MS      100U
-#define APP_BEACON_PASS_CMD         DSHOT_CMD_BEACON5  /* ~870 Hz chime */
-#define APP_BEACON_FAIL_CMD         DSHOT_CMD_BEACON1  /* ~250 Hz buzz  */
+#define APP_BEACON_PASS_CMD         5U   /* DSHOT_CMD_BEACON5 — ~870 Hz chime */
+#define APP_BEACON_FAIL_CMD         1U   /* DSHOT_CMD_BEACON1 — ~250 Hz buzz  */
 
 /* DShot300 RX (input capture, after end-of-frame). PSC=7 -> 10 MHz tick
  * (0.1 us); ARR=1500 -> 150 us RX timeout window; nominal bit cell at the
