@@ -166,42 +166,34 @@ void Trace_PrintResult(const CompositeResult *r,
     trace_write("\r\n");
 }
 
+static void trace_write_kv(const char *prefix, uint32_t value)
+{
+    trace_write(prefix);
+    trace_write_u32(value);
+}
+
 void Trace_PrintCalibration(const CalibrationSummary *s)
 {
     if (s == NULL) return;
 
-    /* First line: human-readable summary. Operators glance at this to
-     * sanity-check the bench (does sigma look plausible?). */
-    trace_write("# CALIBRATION n=");
-    trace_write_u32(s->n_cycles);
-    trace_write(" samples/phase=");
-    trace_write_u32(s->n_samples_per_phase);
-    trace_write("  sigma_x10 = a:");
-    trace_write_u32(s->sigma_pct_x10[CALIBRATION_PHASE_A]);
-    trace_write(" b:");
-    trace_write_u32(s->sigma_pct_x10[CALIBRATION_PHASE_B]);
-    trace_write(" c:");
-    trace_write_u32(s->sigma_pct_x10[CALIBRATION_PHASE_C]);
-    trace_write(" hl:");
-    trace_write_u32(s->sigma_pct_x10[CALIBRATION_PHASE_HALF_LIFE]);
-    trace_write("  recommend_x10 = a:");
-    trace_write_u32(s->recommended_pct_x10[CALIBRATION_PHASE_A]);
-    trace_write(" b:");
-    trace_write_u32(s->recommended_pct_x10[CALIBRATION_PHASE_B]);
-    trace_write(" c:");
-    trace_write_u32(s->recommended_pct_x10[CALIBRATION_PHASE_C]);
-    trace_write(" hl:");
-    trace_write_u32(s->recommended_pct_x10[CALIBRATION_PHASE_HALF_LIFE]);
+    /* Line 1: human-readable. Operator skims it to sanity-check the
+     * bench (does sigma look plausible?). */
+    trace_write_kv("# CALIBRATION n=", s->n_cycles);
+    trace_write_kv(" samples/phase=",  s->n_samples_per_phase);
+    trace_write_kv("  sigma_x10 = a:", s->sigma_pct_x10[CALIBRATION_PHASE_A]);
+    trace_write_kv(" b:",              s->sigma_pct_x10[CALIBRATION_PHASE_B]);
+    trace_write_kv(" c:",              s->sigma_pct_x10[CALIBRATION_PHASE_C]);
+    trace_write_kv(" hl:",             s->sigma_pct_x10[CALIBRATION_PHASE_HALF_LIFE]);
+    trace_write_kv("  recommend_x10 = a:", s->recommended_pct_x10[CALIBRATION_PHASE_A]);
+    trace_write_kv(" b:",              s->recommended_pct_x10[CALIBRATION_PHASE_B]);
+    trace_write_kv(" c:",              s->recommended_pct_x10[CALIBRATION_PHASE_C]);
+    trace_write_kv(" hl:",             s->recommended_pct_x10[CALIBRATION_PHASE_HALF_LIFE]);
     trace_write("\r\n");
 
-    /* Second line: copy-pastable into app_config.h. */
-    trace_write("# RECOMMEND   APP_PLATEAU_A_TOL_PCT_X10=");
-    trace_write_u32(s->recommended_pct_x10[CALIBRATION_PHASE_A]);
-    trace_write("  APP_PLATEAU_B_TOL_PCT_X10=");
-    trace_write_u32(s->recommended_pct_x10[CALIBRATION_PHASE_B]);
-    trace_write("  APP_PLATEAU_C_TOL_PCT_X10=");
-    trace_write_u32(s->recommended_pct_x10[CALIBRATION_PHASE_C]);
-    trace_write("  APP_HALF_LIFE_TOL_PCT_X10=");
-    trace_write_u32(s->recommended_pct_x10[CALIBRATION_PHASE_HALF_LIFE]);
+    /* Line 2: copy-pastable into app_config.h. */
+    trace_write_kv("# RECOMMEND   APP_PLATEAU_A_TOL_PCT_X10=", s->recommended_pct_x10[CALIBRATION_PHASE_A]);
+    trace_write_kv("  APP_PLATEAU_B_TOL_PCT_X10=",             s->recommended_pct_x10[CALIBRATION_PHASE_B]);
+    trace_write_kv("  APP_PLATEAU_C_TOL_PCT_X10=",             s->recommended_pct_x10[CALIBRATION_PHASE_C]);
+    trace_write_kv("  APP_HALF_LIFE_TOL_PCT_X10=",             s->recommended_pct_x10[CALIBRATION_PHASE_HALF_LIFE]);
     trace_write("\r\n");
 }

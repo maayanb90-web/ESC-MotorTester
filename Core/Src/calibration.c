@@ -10,9 +10,13 @@
  * centred at 0 by construction (the group mean is the mean across
  * motors per cycle), so sigma is sqrt(sum_sq / n) with no mean
  * subtraction needed.
+ *
+ * Stored value is Σ(dev_x10²). One dev_x10 is at most a few hundred
+ * (deviation in tenths of a percent), so squares fit in uint32 and
+ * the accumulated total over 80 samples fits in uint64 trivially.
  */
 static struct {
-    uint64_t sum_sq_x100; /* dev_x10^2 fits in int32; 80 of them in uint64 trivially */
+    uint64_t sum_sq;
     uint32_t n_samples;
 } s_phase[CALIBRATION_NUM_PHASES];
 
@@ -25,8 +29,6 @@ uint32_t Calibration_ISqrt(uint64_t value)
     if (value < 2U) {
         return (uint32_t)value;
     }
-    /* Initial guess: half the bit-width of value, rounded up. Newton-
-     * Raphson converges in <= log2(64) = 6 iterations from there. */
     uint64_t x   = value;
     uint64_t y   = (x + 1U) >> 1;
     while (y < x) {
@@ -36,16 +38,11 @@ uint32_t Calibration_ISqrt(uint64_t value)
     return (uint32_t)x;
 }
 
-static uint16_t fold_dev_into_phase(uint8_t phase, int32_t dev_x10)
+static void fold_dev_into_phase(uint8_t phase, int32_t dev_x10)
 {
-    /* Square the signed deviation; result is non-negative. dev_x10 is
-     * in tenths-of-percent and bounded by ~1000 in practice (any
-     * sample whose mean differs from the group mean by >100% is
-     * unphysical), so dev_x10^2 fits comfortably in uint32. */
     uint64_t sq = (uint64_t)((int64_t)dev_x10 * (int64_t)dev_x10);
-    s_phase[phase].sum_sq_x100 += sq;
-    s_phase[phase].n_samples   += 1U;
-    return (uint16_t)sq;
+    s_phase[phase].sum_sq    += sq;
+    s_phase[phase].n_samples += 1U;
 }
 
 void Calibration_Reset(void)
@@ -58,14 +55,14 @@ void Calibration_FoldCycle(const CompositeResult *r)
 {
     if (r == NULL) return;
     for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
-        (void)fold_dev_into_phase(CALIBRATION_PHASE_A,
-                                  r->plateau[0].per_motor[i].deviation_pct_x10);
-        (void)fold_dev_into_phase(CALIBRATION_PHASE_B,
-                                  r->plateau[1].per_motor[i].deviation_pct_x10);
-        (void)fold_dev_into_phase(CALIBRATION_PHASE_C,
-                                  r->plateau[2].per_motor[i].deviation_pct_x10);
-        (void)fold_dev_into_phase(CALIBRATION_PHASE_HALF_LIFE,
-                                  r->spin_down.per_motor[i].deviation_pct_x10);
+        for (uint8_t p = 0; p < CALIBRATION_NUM_PHASES; ++p) {
+            /* Phases 0..2 are the three plateaus; phase 3 is the
+             * spin-down half-life check. Same RpmEvalResult shape, just
+             * different sub-structs. */
+            const RpmEvalResult *src = (p < 3U) ? &r->plateau[p]
+                                                : &r->spin_down;
+            fold_dev_into_phase(p, src->per_motor[i].deviation_pct_x10);
+        }
     }
     s_cycle_count++;
 }
@@ -92,11 +89,15 @@ void Calibration_Summarize(CalibrationSummary *out)
             out->recommended_pct_x10[p] = out->default_pct_x10[p];
             continue;
         }
-        uint64_t mean_sq = s_phase[p].sum_sq_x100 / s_phase[p].n_samples;
+        uint64_t mean_sq = s_phase[p].sum_sq / s_phase[p].n_samples;
         uint32_t sigma   = Calibration_ISqrt(mean_sq);
         if (sigma > 0xFFFFU) sigma = 0xFFFFU;
         out->sigma_pct_x10[p] = (uint16_t)sigma;
 
+        /* 3σ rule: ~99.7 % of samples in a normal distribution fall
+         * within ±3σ, so any motor outside that envelope is treated
+         * as a defect. The floor keeps the threshold from tightening
+         * below the design baseline on an unusually quiet batch. */
         uint32_t three_sigma = sigma * 3U;
         if (three_sigma > 0xFFFFU) three_sigma = 0xFFFFU;
 
