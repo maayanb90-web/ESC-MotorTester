@@ -131,6 +131,35 @@ to capture to a file.
 The first line is the header; subsequent lines are data rows. Open
 the file in Excel / LibreOffice / `pandas.read_csv` directly.
 
+## Power-on self-test (POST)
+
+Every boot the firmware runs a brief link-test before the rig is
+ready. For `APP_POST_DURATION_MS` (default 100 ms) the firmware sends
+bidir `MOTOR_STOP` frames on all four channels and counts how many
+CRC-valid telemetry frames each channel returns. Motors stay still —
+every frame is `MOTOR_STOP`, the ESC just answers our query.
+
+Pass condition (per channel): at least `APP_POST_MIN_VALID_FRAMES`
+(default 50) of the ~100 frames return CRC-valid. All four channels
+must pass for the rig to enter Idle.
+
+| Outcome | Behaviour |
+|---|---|
+| All four channels good | LD3 off; rig enters Idle; ready for double-press. |
+| Any channel below threshold | Reuses the fail-indicate cadence: per-motor pitched buzz (BEACON1-4 by channel) + 2 Hz LD3 blink. Operator fixes the wiring, single-press clears to Idle. Power-cycle re-runs POST. |
+
+Trace output (one `#`-prefixed line, host terminal):
+
+```
+# POST valid_frames = c0:97 c1:96 c2:97 c3:97  overall_pass=1
+# POST valid_frames = c0:97 c1:0  c2:95 c3:96  overall_pass=0
+```
+
+What POST catches: dead ESC, wrong pin map, broken signal wire,
+unpaired bidir-DShot channel. What it does NOT catch: motor
+disconnected from its ESC (the ESC alone still passes the link
+check). The full composite test covers the motor-side cases.
+
 ## Auto-calibration (triple-press)
 
 From Idle, a triple-press launches an unattended calibration run:

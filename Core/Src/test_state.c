@@ -23,6 +23,7 @@
 static RpmAccumulator   s_acc[3][APP_NUM_MOTORS];
 static uint32_t         s_plateau_c_mean[APP_NUM_MOTORS];   /* half-life threshold per motor */
 static uint32_t         s_half_life_ticks[APP_NUM_MOTORS];
+static uint16_t         s_post_valid_frames[APP_NUM_MOTORS]; /* link-test frame counter per channel */
 
 static const uint16_t   s_fail_cmd_per_motor[APP_NUM_MOTORS] =
     APP_BEACON_FAIL_CMD_PER_MOTOR;
@@ -160,6 +161,62 @@ static void enter_calibration(void)
     enter_plateau_a();   /* sets LED, s_active_run, etc. */
 }
 
+static void enter_post(void)
+{
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        s_post_valid_frames[ch] = 0;
+    }
+    Led_SetMode(LED_BLINK_FAST);
+    s_phase       = TEST_POST;
+    s_phase_ticks = 0;
+}
+
+/* Send one MOTOR_STOP frame and harvest telemetry. Each tick adds at
+ * most one valid frame per channel (the bidir RX path can only deliver
+ * one telem update per TX cycle). Over APP_POST_DURATION_MS ticks that
+ * gives us ~APP_POST_DURATION_MS chances per channel — well above the
+ * APP_POST_MIN_VALID_FRAMES threshold on a healthy link. */
+static void drive_post_tick(void)
+{
+    DShot_SendAll(DSHOT_CMD_MOTOR_STOP, true);
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        DShotTelem t = DShot_ConsumeTelem(ch);
+        if (t.valid) {
+            s_post_valid_frames[ch]++;
+        }
+    }
+}
+
+static void finalize_post(void)
+{
+    /* Build a minimal CompositeResult view: only per_motor_pass[] and
+     * overall_pass are read by drive_result_tick during the fail-
+     * indicate cadence; the plateau / spin_down sub-results are
+     * harmlessly zero. */
+    memset(&s_last_result, 0, sizeof(s_last_result));
+    bool overall = true;
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        const bool ok = (s_post_valid_frames[ch] >= APP_POST_MIN_VALID_FRAMES);
+        s_last_result.per_motor_pass[ch] = ok;
+        if (!ok) overall = false;
+    }
+    s_last_result.overall_pass = overall;
+
+    Trace_PrintPost(s_post_valid_frames, overall);
+
+    if (overall) {
+        /* Link is healthy — drop straight to Idle, no audio cue. */
+        enter_idle();
+        return;
+    }
+    /* Reuse the existing fail-indicate path: per-motor pitched buzz
+     * cadence + slow LED blink until the operator clears with a
+     * single press. */
+    Led_SetMode(LED_BLINK_SLOW);
+    s_phase       = TEST_RESULT;
+    s_phase_ticks = 0;
+}
+
 /* --------------------------- tick helpers ---------------------------------- */
 
 static void drive_plateau_tick(uint8_t plateau_idx, uint16_t throttle_dshot)
@@ -240,7 +297,10 @@ static void drive_result_tick(void)
 
 void TestState_Init(void)
 {
-    enter_idle();
+    /* The boot path runs POST first; finalize_post drops to Idle on
+     * success or transitions into the fail-indicate cadence on any
+     * channel failure. */
+    enter_post();
 }
 
 void TestState_Tick(void)
@@ -259,6 +319,14 @@ void TestState_Tick(void)
             enter_plateau_a();
         } else if (evt == BUTTON_EVENT_TRIPLE) {
             enter_calibration();
+        }
+        break;
+
+    case TEST_POST:
+        drive_post_tick();
+        s_phase_ticks++;
+        if (s_phase_ticks >= APP_POST_DURATION_MS) {
+            finalize_post();
         }
         break;
 

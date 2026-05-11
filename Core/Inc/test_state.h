@@ -26,6 +26,7 @@
 
 typedef enum {
     TEST_IDLE = 0,
+    TEST_POST,           /* power-on self-test: bidir link check at boot */
     TEST_PLATEAU_A,
     TEST_PLATEAU_B,
     TEST_PLATEAU_C,

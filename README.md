@@ -56,7 +56,13 @@ from `motor_test_rig.ioc`.
 ## Operation
 
 1. Mount 4 motors on the rig (no propellers). Wire them to the 4-in-1 ESC.
-2. Power the rig from a 6S LiPo or bench PSU. All motors stay off.
+2. Power the rig from a 6S LiPo or bench PSU. **The rig auto-runs a
+   ~100 ms link-test (POST) at boot:** LD3 fast-blinks briefly, the
+   firmware sends bidir `MOTOR_STOP` frames on all four channels and
+   checks each ESC returns CRC-valid telemetry. Motors stay still.
+   Pass → LD3 off, rig is ready. Fail → the fail-indicate cadence
+   plays on the bad channel(s); fix the wiring, single-press to clear
+   to Idle, power-cycle to re-POST.
 3. **Double-press** the button → composite test runs for ~13 s:
    - Plateau A — 3 s at 15 % throttle (low-throttle commutation check)
    - Plateau B — 3 s at 25 % throttle (mid-range commutation, magnet strength)
@@ -181,6 +187,8 @@ All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 | `APP_PLATEAU_C_TOL_PCT_X10`  | 100   | ±10.0 % — slip noise grows with throttle |
 | `APP_HALF_LIFE_TOL_PCT_X10`  | 200   | ±20.0 % — bearing variance is wide |
 | `APP_CALIBRATION_CYCLES`     | 20    | Cycles run on triple-press calibration (~4-5 min) |
+| `APP_POST_DURATION_MS`       | 100   | Boot-time link-test duration |
+| `APP_POST_MIN_VALID_FRAMES`  | 50    | Min CRC-valid frames per channel for POST pass |
 | `APP_BEACON_DURATION_MS`     | 100   | Initial overall pass/fail tone |
 | `APP_BEACON_PASS_CMD`        | 5     | `DSHOT_CMD_BEACON5` — high chime |
 | `APP_BEACON_FAIL_CMD_PER_MOTOR` | `{1,2,3,4}` | `DSHOT_CMD_BEACON1..4` — distinct pitch per motor |

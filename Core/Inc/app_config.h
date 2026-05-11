@@ -77,6 +77,14 @@
  * estimate. */
 #define APP_CALIBRATION_CYCLES      20U
 
+/* Power-on self-test: send bidir MOTOR_STOP frames for N ticks at
+ * boot and require each channel to return at least M CRC-valid
+ * telemetry frames. Catches dead ESC / wrong pin map / broken
+ * wiring before the operator commits to a full 13-s test cycle.
+ * Motors stay still throughout — every frame is MOTOR_STOP. */
+#define APP_POST_DURATION_MS        100U
+#define APP_POST_MIN_VALID_FRAMES   50U    /* >= 50 of ~100 frames */
+
 /* After the initial 100 ms pass/fail tone, if the test failed the rig
  * loops a per-motor indicator cadence: 400 ms BEACON1 on each failed
  * channel + 200 ms silence (MOTOR_STOP) on all channels. The silence

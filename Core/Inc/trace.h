@@ -27,5 +27,7 @@ void Trace_PrintResult(const CompositeResult *r,
                        uint32_t t_ms,
                        bool     aborted);
 void Trace_PrintCalibration(const CalibrationSummary *s);
+void Trace_PrintPost(const uint16_t valid_frames[APP_NUM_MOTORS],
+                     bool overall_pass);
 
 #endif /* TRACE_H */

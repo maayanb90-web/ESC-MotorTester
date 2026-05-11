@@ -172,6 +172,20 @@ static void trace_write_kv(const char *prefix, uint32_t value)
     trace_write_u32(value);
 }
 
+void Trace_PrintPost(const uint16_t valid_frames[APP_NUM_MOTORS],
+                     bool overall_pass)
+{
+    /* `#`-prefixed comment line so CSV parsers ignore it. Operator can
+     * read the per-channel valid-frame count at a glance — a c2:0
+     * (etc.) jumps out as the failed channel. */
+    trace_write_kv("# POST valid_frames = c0:", valid_frames[0]);
+    trace_write_kv(" c1:", valid_frames[1]);
+    trace_write_kv(" c2:", valid_frames[2]);
+    trace_write_kv(" c3:", valid_frames[3]);
+    trace_write_kv("  overall_pass=", overall_pass ? 1U : 0U);
+    trace_write("\r\n");
+}
+
 void Trace_PrintCalibration(const CalibrationSummary *s)
 {
     if (s == NULL) return;
