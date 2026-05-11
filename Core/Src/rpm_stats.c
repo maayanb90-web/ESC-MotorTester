@@ -56,6 +56,16 @@ bool RpmStats_Evaluate(RpmEvalResult *out)
 
     out->group_mean_rpm = (uint32_t)(group_sum / present_count);
 
+    if (out->group_mean_rpm == 0U) {
+        /* Every present motor reported exactly 0 RPM. The deviation check
+         * below would divide by zero; treat the batch as failed. The TX/RX
+         * path is supposed to filter the motor_stopped sentinel into an
+         * invalid telemetry sample (see Core/Src/dshot.c::dshot_decode_rx),
+         * so reaching here means something else is wrong (broken ESC, noise). */
+        out->overall_pass = false;
+        return false;
+    }
+
     /* Per-motor deviation check. We use integer math in tenths-of-percent
      * to avoid floating point. Deviation = (mean - group) * 1000 / group. */
     bool all_pass = true;

@@ -17,7 +17,7 @@
  * TX path
  *   Each of the 4 channels has its own DMA stream that walks a 17-entry
  *   CCR buffer (16 frame bits + 1 trailing zero so the line ends low). The
- *   streams are armed in DMAMUX so each TIM1 CC event triggers one bit on
+ *   streams are routed via DMA1->CSELR so each TIM1 CC event triggers one bit on
  *   its own channel. With TIM1 at 80 MHz and ARR+1 = 267 the bit-cell is
  *   ~3.34 us — i.e. DShot300.
  *
@@ -42,26 +42,38 @@
 #define DSHOT_BUF_LEN           (DSHOT_BITS_PER_FRAME + 1U) /* +1 trailing low */
 #define DSHOT_RX_CAPS           32U                          /* > 21 GCR edges */
 
-/* DMAMUX request IDs per RM0394 Table 50. */
-#define DMAMUX_REQ_TIM1_CH1     11U
-#define DMAMUX_REQ_TIM1_CH2     12U
-#define DMAMUX_REQ_TIM1_CH3     13U
-#define DMAMUX_REQ_TIM1_CH4     14U
-
-/* DMA1 channel mapping. We use channels 2..5; channel 1 is left free for
- * future ADC use. */
+/*
+ * DMA channel routing on STM32L432KC (RM0394 Table 41). The L432 uses
+ * DMA1->CSELR for per-channel request multiplexing (no DMAMUX peripheral).
+ * Each entry below picks request "0b0111" on the listed channel, which
+ * selects the TIM1 event named in the comment.
+ *
+ *   s_dma_ch[0] -> TIM1_CH1  on DMA1_Channel2  (CSELR.C2S = 7)
+ *   s_dma_ch[1] -> TIM1_CH2  on DMA1_Channel3  (CSELR.C3S = 7)
+ *   s_dma_ch[2] -> TIM1_CH3  on DMA1_Channel6  (CSELR.C6S = 7)
+ *   s_dma_ch[3] -> TIM1_CH4  on DMA1_Channel4  (CSELR.C4S = 7)
+ *
+ * Channel 5 is reserved for TIM1_UP and is intentionally unused here.
+ * Note that CH3 lives on Channel 6, not Channel 4 — easy to get wrong.
+ */
 static DMA_Channel_TypeDef * const s_dma_ch[APP_NUM_MOTORS] = {
-    DMA1_Channel2, DMA1_Channel3, DMA1_Channel4, DMA1_Channel5,
+    DMA1_Channel2, DMA1_Channel3, DMA1_Channel6, DMA1_Channel4,
 };
 
-static DMAMUX_Channel_TypeDef * const s_dmamux_ch[APP_NUM_MOTORS] = {
-    DMAMUX1_Channel1, DMAMUX1_Channel2, DMAMUX1_Channel3, DMAMUX1_Channel4,
+/* CSELR sub-field index (0..6) corresponding to s_dma_ch[i], i.e.
+ * (channel_number - 1). C1S..C7S occupy bits [3:0]..[27:24] of CSELR in
+ * 4-bit fields. */
+static const uint8_t s_csel_shift[APP_NUM_MOTORS] = {
+    (2 - 1) * 4U,   /* DMA1_Channel2 -> C2S, bits [7:4]   */
+    (3 - 1) * 4U,   /* DMA1_Channel3 -> C3S, bits [11:8]  */
+    (6 - 1) * 4U,   /* DMA1_Channel6 -> C6S, bits [23:20] */
+    (4 - 1) * 4U,   /* DMA1_Channel4 -> C4S, bits [15:12] */
 };
-
-static const uint32_t s_dmamux_req[APP_NUM_MOTORS] = {
-    DMAMUX_REQ_TIM1_CH1, DMAMUX_REQ_TIM1_CH2,
-    DMAMUX_REQ_TIM1_CH3, DMAMUX_REQ_TIM1_CH4,
-};
+#define DSHOT_CSEL_REQUEST_TIM1     0x07U   /* request "0b0111" picks TIM1 events */
+#define DSHOT_END_OF_FRAME_IRQn     DMA1_Channel4_IRQn  /* CH4's DMA channel */
+#define DSHOT_END_OF_FRAME_TCIF     DMA_ISR_TCIF4
+#define DSHOT_END_OF_FRAME_CTCIF    DMA_IFCR_CTCIF4
+#define DSHOT_END_OF_FRAME_HANDLER  DMA1_Channel4_IRQHandler
 
 static volatile uint32_t * const s_ccr[APP_NUM_MOTORS] = {
     &TIM1->CCR1, &TIM1->CCR2, &TIM1->CCR3, &TIM1->CCR4,
@@ -95,16 +107,16 @@ static uint16_t dshot_crc_nibble(uint16_t value12)
  *   bit  4     : telemetry request
  *   bits 3..0  : CRC (over value<<1 | telem)
  *
- * For bidirectional DShot the entire frame is inverted (and the CRC is
- * computed over the inverted nibbles — equivalently, we XOR with 0x0F).
+ * For bidirectional DShot the entire 16-bit packet is inverted before
+ * transmission; the receiver inverts back and verifies the standard CRC.
+ * NOTE: do not also pre-invert the CRC nibble — that would cancel the
+ * whole-frame inversion in the low nibble and the ESC would reject every
+ * frame. (This was a real bug; see git history.)
  */
 static uint16_t dshot_make_frame(uint16_t value, bool telem_req, bool invert)
 {
-    uint16_t v12 = ((value & 0x07FF) << 1) | (telem_req ? 1U : 0U);
-    uint16_t crc = dshot_crc_nibble(v12);
-    if (invert) {
-        crc = (~crc) & 0x0F;
-    }
+    uint16_t v12   = ((value & 0x07FF) << 1) | (telem_req ? 1U : 0U);
+    uint16_t crc   = dshot_crc_nibble(v12);
     uint16_t frame = (v12 << 4) | crc;
     return invert ? (uint16_t)~frame : frame;
 }
@@ -125,7 +137,6 @@ static void dshot_gpio_init_af(void)
     LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOA);
     LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOB);
     LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA1);
-    LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMAMUX1);
     LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_TIM1);
 
     LL_GPIO_InitTypeDef io = {
@@ -178,6 +189,19 @@ static void dshot_tim1_init(void)
     LL_TIM_EnableDMAReq_CC4(TIM1);
 }
 
+static void dshot_csel_route(void)
+{
+    /* One-time CSELR setup: route each of our channels to its TIM1 CCx
+     * request. C{n}S occupies a 4-bit field at bit position (n-1)*4. */
+    uint32_t cselr = DMA1_CSELR->CSELR;
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        const uint32_t mask = 0xFU << s_csel_shift[ch];
+        cselr = (cselr & ~mask)
+              | ((uint32_t)DSHOT_CSEL_REQUEST_TIM1 << s_csel_shift[ch]);
+    }
+    DMA1_CSELR->CSELR = cselr;
+}
+
 static void dshot_tx_arm_dma(uint8_t ch)
 {
     DMA_Channel_TypeDef *dma = s_dma_ch[ch];
@@ -189,8 +213,9 @@ static void dshot_tx_arm_dma(uint8_t ch)
     dma->CPAR  = (uint32_t)s_ccr[ch];
     dma->CMAR  = (uint32_t)s_tx_buf[ch];
 
-    /* Mem->Periph, word transfers, mem-increment. TC IRQ only on the last
-     * channel — that's our "frame sent, switch to RX" trigger. */
+    /* Mem->Periph, word transfers, mem-increment. The DShot CH4 DMA
+     * channel (DMA1_Channel4 on L432) carries our "frame sent, switch
+     * to RX" interrupt; only that channel enables TCIE. */
     uint32_t ccr = DMA_CCR_DIR
                  | DMA_CCR_MINC
                  | (2U << DMA_CCR_PSIZE_Pos)
@@ -199,7 +224,6 @@ static void dshot_tx_arm_dma(uint8_t ch)
     if (ch == APP_NUM_MOTORS - 1) {
         ccr |= DMA_CCR_TCIE;
     }
-    s_dmamux_ch[ch]->CCR = s_dmamux_req[ch];
 
     dma->CCR = ccr | DMA_CCR_EN;
 }
@@ -212,9 +236,10 @@ void DShot_Init(void)
 
     dshot_gpio_init_af();
     dshot_tim1_init();
+    dshot_csel_route();
 
-    NVIC_SetPriority(DMA1_Channel5_IRQn, 1);
-    NVIC_EnableIRQ(DMA1_Channel5_IRQn);
+    NVIC_SetPriority(DSHOT_END_OF_FRAME_IRQn, 1);
+    NVIC_EnableIRQ(DSHOT_END_OF_FRAME_IRQn);
     NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 1);
     NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
 
@@ -240,7 +265,11 @@ void DShot_SendAll(uint16_t value, bool request_telem)
 
 void DShot_StopAll(void)
 {
-    DShot_SendAll(DSHOT_CMD_MOTOR_STOP, false);
+    /* Use bidir encoding so the ESC, which is in bidir mode, accepts the
+     * command cleanly. The 'request_telem' flag also makes the frame
+     * structurally identical to the throttle frames the ESC just saw,
+     * which avoids it momentarily re-detecting the protocol. */
+    DShot_SendAll(DSHOT_CMD_MOTOR_STOP, true);
 }
 
 DShotTelem DShot_ConsumeTelem(uint8_t channel)
@@ -298,11 +327,12 @@ static void dshot_rx_switch_to_input(void)
         dma->CNDTR = DSHOT_RX_CAPS;
         dma->CPAR  = (uint32_t)s_ccr[ch];
         dma->CMAR  = (uint32_t)s_rx_buf[ch];
+        /* CSELR routing was set once in DShot_Init and stays valid in
+         * RX direction too — the same TIM1 CCx events drive captures. */
         dma->CCR   = DMA_CCR_MINC                       /* mem-increment */
                    | (1U << DMA_CCR_PSIZE_Pos)          /* 16-bit periph */
                    | (1U << DMA_CCR_MSIZE_Pos)          /* 16-bit mem    */
                    | DMA_CCR_PL_1;                      /* priority high */
-        s_dmamux_ch[ch]->CCR = s_dmamux_req[ch];
         dma->CCR  |= DMA_CCR_EN;
     }
 
@@ -349,9 +379,13 @@ static void dshot_decode_rx(void)
 
         DShotGcrFrame gcr;
         if (!DShotGcr_Decode(s_rx_buf[ch], n_edges,
-                             APP_DSHOT_RX_BIT_TICKS, &gcr)) {
-            /* Leave s_telem[ch].valid = false so the app treats it as a
-             * no-telemetry failure per PRD §5. */
+                             APP_DSHOT_RX_BIT_TICKS, &gcr) ||
+            gcr.motor_stopped) {
+            /* No CRC-valid frame OR ESC reports the motor is not spinning.
+             * Either way the app should treat the channel as failed per
+             * PRD §5. We deliberately do NOT inject a valid rpm=0 sample
+             * here: that would make group_mean_rpm 0 and divide-by-zero
+             * the deviation check in RpmStats_Evaluate. */
             s_telem[ch].valid = false;
             continue;
         }
@@ -359,25 +393,20 @@ static void dshot_decode_rx(void)
         DShotTelem t = {
             .valid     = true,
             .period_us = gcr.period_us,
-            .erpm      = gcr.motor_stopped
-                            ? 0U
-                            : (60000000U / gcr.period_us),
-            .rpm       = gcr.motor_stopped
-                            ? 0U
-                            : DShotGcr_PeriodToRpm(gcr.period_us,
-                                                   APP_MOTOR_POLE_COUNT),
+            .erpm      = 60000000U / gcr.period_us,
+            .rpm       = DShotGcr_PeriodToRpm(gcr.period_us,
+                                              APP_MOTOR_POLE_COUNT),
         };
         s_telem[ch] = t;
     }
 }
 
-/* End-of-frame: DMA1_Channel5 transfer-complete fires on the last CCR
- * write to CH4. Switch CH1..CH4 to input capture and let the ESC drive
- * the GCR response. */
-void DMA1_Channel5_IRQHandler(void)
+/* End-of-frame: the DMA channel that feeds TIM1_CH4 fires transfer-
+ * complete after the last CCR write. On L432 that's DMA1_Channel4. */
+void DSHOT_END_OF_FRAME_HANDLER(void)
 {
-    if (DMA1->ISR & DMA_ISR_TCIF5) {
-        DMA1->IFCR = DMA_IFCR_CTCIF5;
+    if (DMA1->ISR & DSHOT_END_OF_FRAME_TCIF) {
+        DMA1->IFCR = DSHOT_END_OF_FRAME_CTCIF;
 
         /* Stop the bit clock; no more CC DMA requests on TX. */
         TIM1->CR1 &= ~TIM_CR1_CEN;

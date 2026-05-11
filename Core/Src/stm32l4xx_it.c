@@ -4,7 +4,7 @@
   * @file    stm32l4xx_it.c
   * @brief   Cortex-M exception handlers and dispatched device interrupts.
   *
-  * IRQs not declared in this file (DMA1_Channel5, TIM1_UP_TIM16) are
+  * IRQs not declared in this file (DMA1_Channel4, TIM1_UP_TIM16) are
   * defined in Core/Src/dshot.c so the DShot driver owns its transitions
   * end-to-end. The .ioc has those vectors set to "Generate IRQ handler = false".
   ******************************************************************************
@@ -117,7 +117,7 @@ void SysTick_Handler(void)
 
 /******************************************************************************/
 /* STM32L4xx Peripheral Interrupt Handlers                                    */
-/* DMA1_Channel5_IRQHandler and TIM1_UP_TIM16_IRQHandler are defined in       */
+/* DMA1_Channel4_IRQHandler and TIM1_UP_TIM16_IRQHandler are defined in       */
 /* Core/Src/dshot.c.                                                          */
 /******************************************************************************/
 
