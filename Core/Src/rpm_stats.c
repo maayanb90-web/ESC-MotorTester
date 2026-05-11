@@ -21,6 +21,12 @@ bool RpmStats_Evaluate(const RpmAccumulator s[APP_NUM_MOTORS],
                        uint16_t tolerance_pct_x10,
                        RpmEvalResult *out)
 {
+    /* Contract: per-motor mean is computed as sum/count. HalfLife_Evaluate
+     * below depends on this exact formula (it packs each motor's half-life
+     * as a single sample so mean == value). If this function ever moves
+     * to a different aggregation (weighted samples, percentile filtering,
+     * etc.) update HalfLife_Evaluate in lockstep — otherwise half-life
+     * comparisons will silently drift. */
     if (s == NULL || out == NULL) {
         return false;
     }

@@ -249,14 +249,8 @@ void DShot_Init(void)
 
 /* ------------------------------ public API -------------------------------- */
 
-void DShot_SendPerChannel(const uint16_t values[APP_NUM_MOTORS], bool request_telem)
+static void dshot_kick(void)
 {
-    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
-        uint16_t frame = dshot_make_frame(values[ch], request_telem, request_telem);
-        dshot_expand_frame(s_tx_buf[ch], frame);
-        dshot_tx_arm_dma(ch);
-    }
-
     /* Realign all 4 channels on the next update event before kicking. */
     LL_TIM_SetCounter(TIM1, 0);
     LL_TIM_EnableCounter(TIM1);
@@ -264,11 +258,23 @@ void DShot_SendPerChannel(const uint16_t values[APP_NUM_MOTORS], bool request_te
 
 void DShot_SendAll(uint16_t value, bool request_telem)
 {
-    uint16_t values[APP_NUM_MOTORS];
-    for (uint8_t i = 0; i < APP_NUM_MOTORS; ++i) {
-        values[i] = value;
+    /* All four channels carry the same value — build the frame once. */
+    uint16_t frame = dshot_make_frame(value, request_telem, request_telem);
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        dshot_expand_frame(s_tx_buf[ch], frame);
+        dshot_tx_arm_dma(ch);
     }
-    DShot_SendPerChannel(values, request_telem);
+    dshot_kick();
+}
+
+void DShot_SendPerChannel(const uint16_t values[APP_NUM_MOTORS], bool request_telem)
+{
+    for (uint8_t ch = 0; ch < APP_NUM_MOTORS; ++ch) {
+        uint16_t frame = dshot_make_frame(values[ch], request_telem, request_telem);
+        dshot_expand_frame(s_tx_buf[ch], frame);
+        dshot_tx_arm_dma(ch);
+    }
+    dshot_kick();
 }
 
 void DShot_StopAll(void)

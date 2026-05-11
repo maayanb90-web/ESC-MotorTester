@@ -10,11 +10,10 @@
  * Composite v2 motor QA: 3-plateau staircase (15 / 25 / 40 %) + 4 s
  * spin-down + result phase with per-failed-motor beep cadence.
  *
- * DShot value for a throttle percent. Maps the full 0..2047 DShot range
- * so that e.g. 15 % -> 307 (matches PRD §5 / the v1 implementation).
+ * The throttle-percent -> DShot-value macro APP_THROTTLE_DSHOT(pct)
+ * lives in app_config.h alongside the plateau percent tunables, so
+ * any future caller picks up the same conversion.
  */
-#define APP_THROTTLE_DSHOT(pct) \
-    ((uint16_t)((DSHOT_THROTTLE_MAX + 1U) * (uint32_t)(pct) / 100U))
 
 /* Per-plateau accumulators + spin-down state. File-scope so they live
  * across phase transitions but never alias another module's state. */

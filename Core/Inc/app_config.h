@@ -11,6 +11,13 @@
 /* PRD §4: 14-pole motors. eRPM -> mechanical RPM = eRPM * 2 / poles. */
 #define APP_MOTOR_POLE_COUNT        14
 
+/* Throttle percent (0..100, of the full 0..2047 DShot range) -> raw
+ * DShot value. 15 % maps to ~307, matching the PRD §5 example. Lives
+ * here rather than in test_state.c so any future caller (calibration
+ * tool, alternative test profile) gets the same conversion. */
+#define APP_THROTTLE_DSHOT(pct) \
+    ((uint16_t)(((uint32_t)(pct) * 2048U) / 100U))
+
 /* PRD §5 / §8: double-press window between two presses. */
 #define APP_DOUBLE_PRESS_WINDOW_MS  400U
 
