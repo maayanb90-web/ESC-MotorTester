@@ -11,8 +11,6 @@
 #include "rpm_stats.h"
 #include "trace.h"
 
-#include <stdio.h>         /* snprintf for display line buffers */
-
 /*
  * Composite v2 motor QA: 3-plateau staircase (15 / 25 / 40 %) + 4 s
  * spin-down + result phase with per-failed-motor beep cadence.
@@ -62,6 +60,14 @@ static uint16_t            s_runtime_tol[CALIBRATION_NUM_PHASES] = {
     APP_HALF_LIFE_TOL_PCT_X10,
 };
 
+static void apply_runtime_tolerances(const NvConfig *cfg)
+{
+    s_runtime_tol[CALIBRATION_PHASE_A]         = cfg->plat_a_x10;
+    s_runtime_tol[CALIBRATION_PHASE_B]         = cfg->plat_b_x10;
+    s_runtime_tol[CALIBRATION_PHASE_C]         = cfg->plat_c_x10;
+    s_runtime_tol[CALIBRATION_PHASE_HALF_LIFE] = cfg->half_life_x10;
+}
+
 /* ------------------------------ transitions -------------------------------- */
 
 static void enter_idle(void)
@@ -99,11 +105,9 @@ static void enter_plateau_a(void)
     Led_SetMode(LED_BLINK_FAST);
     s_active_run  = true;
     if (s_calibration_active) {
-        char l2[24];
-        (void)snprintf(l2, sizeof(l2), "cycle %lu/%u",
-                       (unsigned long)(s_calibration_cycle + 1U),
-                       (unsigned)APP_CALIBRATION_CYCLES);
-        Display_Status("CALIBRATING", l2, "");
+        Display_Statusf("CALIBRATING", "cycle %u/%u",
+                        (unsigned)(s_calibration_cycle + 1U),
+                        (unsigned)APP_CALIBRATION_CYCLES);
     } else {
         Display_Status("TEST 15%", "PLATEAU A  1/3", "");
     }
@@ -151,10 +155,11 @@ static void enter_result(void)
 {
     DShot_StopAll();
 
-    RpmStats_Evaluate(s_acc[0], s_runtime_tol[0], &s_last_result.plateau[0]);
-    RpmStats_Evaluate(s_acc[1], s_runtime_tol[1], &s_last_result.plateau[1]);
-    RpmStats_Evaluate(s_acc[2], s_runtime_tol[2], &s_last_result.plateau[2]);
-    HalfLife_Evaluate(s_half_life_ticks, s_runtime_tol[3],
+    for (uint8_t p = 0; p < 3; ++p) {
+        RpmStats_Evaluate(s_acc[p], s_runtime_tol[p], &s_last_result.plateau[p]);
+    }
+    HalfLife_Evaluate(s_half_life_ticks,
+                      s_runtime_tol[CALIBRATION_PHASE_HALF_LIFE],
                       &s_last_result.spin_down);
     Composite_Aggregate(&s_last_result);
 
@@ -189,20 +194,14 @@ static void enter_result(void)
             .plat_b_x10    = summary.recommended_pct_x10[CALIBRATION_PHASE_B],
             .plat_c_x10    = summary.recommended_pct_x10[CALIBRATION_PHASE_C],
             .half_life_x10 = summary.recommended_pct_x10[CALIBRATION_PHASE_HALF_LIFE],
-            .reserved      = 0,
-            .crc32         = 0,
-            .pad           = 0,
         };
         NvConfig_FillCrc(&cfg);
 
         s_calibration_save_ok = NvConfig_Save(&cfg);
-        Trace_PrintConfigSaved(s_calibration_save_ok, 0U);
+        Trace_PrintConfigSaved(s_calibration_save_ok);
 
         if (s_calibration_save_ok) {
-            s_runtime_tol[0] = cfg.plat_a_x10;
-            s_runtime_tol[1] = cfg.plat_b_x10;
-            s_runtime_tol[2] = cfg.plat_c_x10;
-            s_runtime_tol[3] = cfg.half_life_x10;
+            apply_runtime_tolerances(&cfg);
             Led_SetMode(LED_SOLID_ON);
             Display_Status("CAL DONE", "SAVED to flash", "press to clear");
         } else {
@@ -222,13 +221,11 @@ static void enter_result(void)
     if (s_last_result.overall_pass) {
         Display_Status("PASS", "all 4 motors good", "press to clear");
     } else {
-        char l2[24];
-        (void)snprintf(l2, sizeof(l2), "M0:%s M1:%s M2:%s M3:%s",
-                       s_last_result.per_motor_pass[0] ? "OK" : "**",
-                       s_last_result.per_motor_pass[1] ? "OK" : "**",
-                       s_last_result.per_motor_pass[2] ? "OK" : "**",
-                       s_last_result.per_motor_pass[3] ? "OK" : "**");
-        Display_Status("FAIL", l2, "press to clear");
+        Display_Statusf("FAIL", "M0:%s M1:%s M2:%s M3:%s",
+                        s_last_result.per_motor_pass[0] ? "OK" : "**",
+                        s_last_result.per_motor_pass[1] ? "OK" : "**",
+                        s_last_result.per_motor_pass[2] ? "OK" : "**",
+                        s_last_result.per_motor_pass[3] ? "OK" : "**");
     }
 
     s_phase       = TEST_RESULT;
@@ -386,10 +383,7 @@ void TestState_Init(void)
      * is active so the operator can see it at a glance. */
     NvConfig cfg;
     if (NvConfig_Load(&cfg)) {
-        s_runtime_tol[0] = cfg.plat_a_x10;
-        s_runtime_tol[1] = cfg.plat_b_x10;
-        s_runtime_tol[2] = cfg.plat_c_x10;
-        s_runtime_tol[3] = cfg.half_life_x10;
+        apply_runtime_tolerances(&cfg);
         Trace_PrintConfigLoaded(s_runtime_tol, "flash");
     } else {
         Trace_PrintConfigLoaded(s_runtime_tol, "defaults");

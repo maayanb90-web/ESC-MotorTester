@@ -29,7 +29,7 @@ void Trace_PrintResult(const CompositeResult *r,
 void Trace_PrintCalibration(const CalibrationSummary *s);
 void Trace_PrintPost(const uint16_t valid_frames[APP_NUM_MOTORS],
                      bool overall_pass);
-void Trace_PrintConfigLoaded(const uint16_t tol[4], const char *src);
-void Trace_PrintConfigSaved(bool ok, uint32_t rc);
+void Trace_PrintConfigLoaded(const uint16_t tol[CALIBRATION_NUM_PHASES], const char *src);
+void Trace_PrintConfigSaved(bool ok);
 
 #endif /* TRACE_H */

@@ -172,26 +172,23 @@ static void trace_write_kv(const char *prefix, uint32_t value)
     trace_write_u32(value);
 }
 
-void Trace_PrintConfigLoaded(const uint16_t tol[4], const char *src)
+void Trace_PrintConfigLoaded(const uint16_t tol[CALIBRATION_NUM_PHASES],
+                             const char *src)
 {
     if (tol == NULL || src == NULL) return;
     trace_write("# CONFIG source=");
     trace_write(src);
-    trace_write_kv("  a:",  tol[0]);
-    trace_write_kv(" b:",   tol[1]);
-    trace_write_kv(" c:",   tol[2]);
-    trace_write_kv(" hl:",  tol[3]);
+    trace_write_kv("  a:",  tol[CALIBRATION_PHASE_A]);
+    trace_write_kv(" b:",   tol[CALIBRATION_PHASE_B]);
+    trace_write_kv(" c:",   tol[CALIBRATION_PHASE_C]);
+    trace_write_kv(" hl:",  tol[CALIBRATION_PHASE_HALF_LIFE]);
     trace_write("\r\n");
 }
 
-void Trace_PrintConfigSaved(bool ok, uint32_t rc)
+void Trace_PrintConfigSaved(bool ok)
 {
-    if (ok) {
-        trace_write("# SAVED tolerances to flash\r\n");
-    } else {
-        trace_write_kv("# SAVE FAILED rc=", rc);
-        trace_write("\r\n");
-    }
+    trace_write(ok ? "# SAVED tolerances to flash\r\n"
+                   : "# SAVE FAILED\r\n");
 }
 
 void Trace_PrintPost(const uint16_t valid_frames[APP_NUM_MOTORS],
