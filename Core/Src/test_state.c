@@ -3,11 +3,15 @@
 #include "app_config.h"
 #include "button.h"
 #include "calibration.h"
+#include "display.h"
 #include "dshot.h"
 #include "led.h"
 #include "main.h"          /* HAL_GetTick for trace timestamps */
+#include "nvconfig.h"
 #include "rpm_stats.h"
 #include "trace.h"
+
+#include <stdio.h>         /* snprintf for display line buffers */
 
 /*
  * Composite v2 motor QA: 3-plateau staircase (15 / 25 / 40 %) + 4 s
@@ -43,6 +47,20 @@ static bool                s_active_run         = false;
  * whole run (no summary). */
 static bool                s_calibration_active = false;
 static uint32_t            s_calibration_cycle  = 0;
+/* True iff the last calibration's NvConfig_Save succeeded. Drives the
+ * LED state in TEST_CALIBRATION_DONE and gates the 2 s BEACON1 alarm. */
+static bool                s_calibration_save_ok = true;
+
+/* Runtime per-phase tolerances. Initialised at boot from
+ * NvConfig_Load (if flash holds valid data) or the compile-time
+ * defaults. Updated immediately after a successful NvConfig_Save so
+ * the next test cycle uses the new values without a reboot. */
+static uint16_t            s_runtime_tol[CALIBRATION_NUM_PHASES] = {
+    APP_PLATEAU_A_TOL_PCT_X10,
+    APP_PLATEAU_B_TOL_PCT_X10,
+    APP_PLATEAU_C_TOL_PCT_X10,
+    APP_HALF_LIFE_TOL_PCT_X10,
+};
 
 /* ------------------------------ transitions -------------------------------- */
 
@@ -63,6 +81,8 @@ static void enter_idle(void)
     s_calibration_active = false;
     s_calibration_cycle  = 0;
 
+    Display_Status("READY", "2x press = TEST", "3x press = CAL");
+
     s_phase       = TEST_IDLE;
     s_phase_ticks = 0;
 }
@@ -78,18 +98,33 @@ static void enter_plateau_a(void)
     }
     Led_SetMode(LED_BLINK_FAST);
     s_active_run  = true;
+    if (s_calibration_active) {
+        char l2[24];
+        (void)snprintf(l2, sizeof(l2), "cycle %lu/%u",
+                       (unsigned long)(s_calibration_cycle + 1U),
+                       (unsigned)APP_CALIBRATION_CYCLES);
+        Display_Status("CALIBRATING", l2, "");
+    } else {
+        Display_Status("TEST 15%", "PLATEAU A  1/3", "");
+    }
     s_phase       = TEST_PLATEAU_A;
     s_phase_ticks = 0;
 }
 
 static void enter_plateau_b(void)
 {
+    if (!s_calibration_active) {
+        Display_Status("TEST 25%", "PLATEAU B  2/3", "");
+    }
     s_phase       = TEST_PLATEAU_B;
     s_phase_ticks = 0;
 }
 
 static void enter_plateau_c(void)
 {
+    if (!s_calibration_active) {
+        Display_Status("TEST 40%", "PLATEAU C  3/3", "");
+    }
     s_phase       = TEST_PLATEAU_C;
     s_phase_ticks = 0;
 }
@@ -105,6 +140,9 @@ static void enter_spin_down(void)
             ? (uint32_t)(s_acc[2][ch].sum / s_acc[2][ch].count)
             : 0U;
     }
+    if (!s_calibration_active) {
+        Display_Status("COOL-DOWN", "SPIN-DOWN  4/4", "");
+    }
     s_phase       = TEST_SPIN_DOWN;
     s_phase_ticks = 0;
 }
@@ -113,10 +151,10 @@ static void enter_result(void)
 {
     DShot_StopAll();
 
-    RpmStats_Evaluate(s_acc[0], APP_PLATEAU_A_TOL_PCT_X10, &s_last_result.plateau[0]);
-    RpmStats_Evaluate(s_acc[1], APP_PLATEAU_B_TOL_PCT_X10, &s_last_result.plateau[1]);
-    RpmStats_Evaluate(s_acc[2], APP_PLATEAU_C_TOL_PCT_X10, &s_last_result.plateau[2]);
-    HalfLife_Evaluate(s_half_life_ticks, APP_HALF_LIFE_TOL_PCT_X10,
+    RpmStats_Evaluate(s_acc[0], s_runtime_tol[0], &s_last_result.plateau[0]);
+    RpmStats_Evaluate(s_acc[1], s_runtime_tol[1], &s_last_result.plateau[1]);
+    RpmStats_Evaluate(s_acc[2], s_runtime_tol[2], &s_last_result.plateau[2]);
+    HalfLife_Evaluate(s_half_life_ticks, s_runtime_tol[3],
                       &s_last_result.spin_down);
     Composite_Aggregate(&s_last_result);
 
@@ -127,7 +165,7 @@ static void enter_result(void)
         /* Fold this cycle's deviations into the calibration
          * accumulators. If more cycles remain, loop straight back into
          * plateau A without entering the TEST_RESULT beacon phase.
-         * Otherwise summarise and emit the recommendation block. */
+         * Otherwise summarise, save to flash, and finalise. */
         Calibration_FoldCycle(&s_last_result);
         s_calibration_cycle++;
 
@@ -140,15 +178,59 @@ static void enter_result(void)
         Calibration_Summarize(&summary);
         Trace_PrintCalibration(&summary);
 
+        /* Persist to flash. On success, update s_runtime_tol[] so the
+         * next test cycle uses the new values without a reboot. On
+         * failure, runtime keeps the previous values; LED + BEACON1
+         * alarm in TEST_CALIBRATION_DONE flags the issue. */
+        NvConfig cfg = {
+            .magic         = NVCONFIG_MAGIC,
+            .version       = NVCONFIG_SCHEMA_VERSION,
+            .plat_a_x10    = summary.recommended_pct_x10[CALIBRATION_PHASE_A],
+            .plat_b_x10    = summary.recommended_pct_x10[CALIBRATION_PHASE_B],
+            .plat_c_x10    = summary.recommended_pct_x10[CALIBRATION_PHASE_C],
+            .half_life_x10 = summary.recommended_pct_x10[CALIBRATION_PHASE_HALF_LIFE],
+            .reserved      = 0,
+            .crc32         = 0,
+            .pad           = 0,
+        };
+        NvConfig_FillCrc(&cfg);
+
+        s_calibration_save_ok = NvConfig_Save(&cfg);
+        Trace_PrintConfigSaved(s_calibration_save_ok, 0U);
+
+        if (s_calibration_save_ok) {
+            s_runtime_tol[0] = cfg.plat_a_x10;
+            s_runtime_tol[1] = cfg.plat_b_x10;
+            s_runtime_tol[2] = cfg.plat_c_x10;
+            s_runtime_tol[3] = cfg.half_life_x10;
+            Led_SetMode(LED_SOLID_ON);
+            Display_Status("CAL DONE", "SAVED to flash", "press to clear");
+        } else {
+            Led_SetMode(LED_BLINK_FAST);
+            Display_Status("CAL DONE", "SAVE FAILED", "see # RECOMMEND");
+        }
+
         s_calibration_active = false;
         s_calibration_cycle  = 0;
-        Led_SetMode(LED_SOLID_ON);
         s_phase       = TEST_CALIBRATION_DONE;
         s_phase_ticks = 0;
         return;
     }
 
     Led_SetMode(s_last_result.overall_pass ? LED_SOLID_ON : LED_BLINK_SLOW);
+
+    if (s_last_result.overall_pass) {
+        Display_Status("PASS", "all 4 motors good", "press to clear");
+    } else {
+        char l2[24];
+        (void)snprintf(l2, sizeof(l2), "M0:%s M1:%s M2:%s M3:%s",
+                       s_last_result.per_motor_pass[0] ? "OK" : "**",
+                       s_last_result.per_motor_pass[1] ? "OK" : "**",
+                       s_last_result.per_motor_pass[2] ? "OK" : "**",
+                       s_last_result.per_motor_pass[3] ? "OK" : "**");
+        Display_Status("FAIL", l2, "press to clear");
+    }
+
     s_phase       = TEST_RESULT;
     s_phase_ticks = 0;
 }
@@ -167,6 +249,7 @@ static void enter_post(void)
         s_post_valid_frames[ch] = 0;
     }
     Led_SetMode(LED_BLINK_FAST);
+    Display_Status("SELF-TEST", "checking ESC link...", "");
     s_phase       = TEST_POST;
     s_phase_ticks = 0;
 }
@@ -297,6 +380,21 @@ static void drive_result_tick(void)
 
 void TestState_Init(void)
 {
+    /* Load previously-saved tolerances from flash, if any. Falls back
+     * to the compile-time defaults in app_config.h on bad magic / bad
+     * CRC / unprogrammed page. The boot trace records which source
+     * is active so the operator can see it at a glance. */
+    NvConfig cfg;
+    if (NvConfig_Load(&cfg)) {
+        s_runtime_tol[0] = cfg.plat_a_x10;
+        s_runtime_tol[1] = cfg.plat_b_x10;
+        s_runtime_tol[2] = cfg.plat_c_x10;
+        s_runtime_tol[3] = cfg.half_life_x10;
+        Trace_PrintConfigLoaded(s_runtime_tol, "flash");
+    } else {
+        Trace_PrintConfigLoaded(s_runtime_tol, "defaults");
+    }
+
     /* The boot path runs POST first; finalize_post drops to Idle on
      * success or transitions into the fail-indicate cadence on any
      * channel failure. */
@@ -360,9 +458,19 @@ void TestState_Tick(void)
         break;
 
     case TEST_CALIBRATION_DONE:
-        /* LD3 solid, motors silent. Wait for the operator to clear
-         * with a single press. The SINGLE-press handler above already
-         * does enter_idle() so we have nothing to do here. */
+        /* On save-failure, sound a one-shot BEACON1 alarm on all four
+         * motors for the first APP_SAVE_FAIL_BUZZ_MS ticks; LD3 stays
+         * fast-blinking until the operator clears with single-press.
+         * On save-success the rig is silent, LD3 solid — same UX as
+         * any "all done, waiting for clear" state. */
+        if (!s_calibration_save_ok && s_phase_ticks < APP_SAVE_FAIL_BUZZ_MS) {
+            const uint16_t alarm[APP_NUM_MOTORS] = {
+                DSHOT_CMD_BEACON1, DSHOT_CMD_BEACON1,
+                DSHOT_CMD_BEACON1, DSHOT_CMD_BEACON1,
+            };
+            DShot_SendPerChannel(alarm, true);
+        }
+        s_phase_ticks++;
         break;
     }
 }

@@ -89,13 +89,21 @@ from `motor_test_rig.ioc`.
    fail-indicate cadence and returns to Idle.
 6. **Triple-press** from Idle starts an **auto-calibration** run: the
    rig executes `APP_CALIBRATION_CYCLES` (default 20) composite cycles
-   back-to-back on a known-good batch, then emits a recommended-
-   tolerance summary line over the CSV log. Each cycle still produces
-   its normal CSV row, so the raw data is captured too. After the
-   summary, LD3 goes solid; single-press to clear. Operator pastes
-   the four recommended `APP_*_TOL_PCT_X10` values into `app_config.h`
-   and rebuilds — that's the §8 "process a known-good batch and set
-   max(default, 3 sigma)" workflow, automated.
+   back-to-back on a known-good batch, then **automatically writes the
+   recommended tolerances to MCU flash** (page 127 at 0x0803F800). On
+   every subsequent boot the firmware loads them back, so the
+   tolerances persist across power cycles **without editing
+   `app_config.h` or reflashing**. Outcome:
+   - **Save success** → LD3 solid, motors silent (existing UX), trace
+     emits `# SAVED tolerances to flash`.
+   - **Save failure** (rare, e.g. worn flash) → LD3 fast-blinks, all
+     four motors emit a single ~2 s BEACON1 buzz, trace emits
+     `# SAVE FAILED rc=<sr>`. The `# RECOMMEND` line is still in the
+     log for the manual-paste fallback.
+
+   Single-press clears either outcome. Re-running calibration on a
+   different batch overwrites the saved values. To revert to
+   firmware defaults: mass-erase the chip via STM32CubeIDE.
 
 ## Button gestures (operator cheat-sheet)
 
@@ -150,7 +158,10 @@ imported directly while the comment lines stay human-readable.
 | `<n>,<ms>,0,1,0,...` | Data row — aborted cycle, zeroed cols  | Operator single-presses mid-test | `2,18900,0,1,0,0,0,0,0,0,0,0,0,...`        |
 | `# POST valid_frames = ...` | Power-on self-test result        | Once at boot, after the 100 ms link-test | `# POST valid_frames = c0:97 c1:96 c2:97 c3:97  overall_pass=1` |
 | `# CALIBRATION n=... sigma_x10 = ...` | Per-phase σ summary    | End of triple-press calibration | `# CALIBRATION n=20 samples/phase=80  sigma_x10 = a:23 b:31 c:48 hl:142  recommend_x10 = a:70 b:93 c:144 hl:426` |
-| `# RECOMMEND APP_PLATEAU_*_TOL_PCT_X10=...` | Copy-pastable tolerance block | Immediately after `# CALIBRATION` | `# RECOMMEND   APP_PLATEAU_A_TOL_PCT_X10=70  APP_PLATEAU_B_TOL_PCT_X10=93  APP_PLATEAU_C_TOL_PCT_X10=144  APP_HALF_LIFE_TOL_PCT_X10=426` |
+| `# RECOMMEND APP_PLATEAU_*_TOL_PCT_X10=...` | Manual-paste fallback (saved automatically too) | Immediately after `# CALIBRATION` | `# RECOMMEND   APP_PLATEAU_A_TOL_PCT_X10=70  APP_PLATEAU_B_TOL_PCT_X10=93  APP_PLATEAU_C_TOL_PCT_X10=144  APP_HALF_LIFE_TOL_PCT_X10=426` |
+| `# CONFIG source=flash` / `source=defaults` | Which tolerance set is active at boot | Once at boot, after the CSV header | `# CONFIG source=flash  a:70 b:93 c:144 hl:426` |
+| `# SAVED tolerances to flash` | Auto-save succeeded | End of calibration | `# SAVED tolerances to flash` |
+| `# SAVE FAILED rc=<n>` | Auto-save failed (flash error) | End of calibration | `# SAVE FAILED rc=0` |
 
 `t_ms` is `HAL_GetTick()` at the moment the row was emitted; it
 increments monotonically from boot and wraps at ~49 days.
@@ -227,6 +238,8 @@ All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 | `APP_BEACON_FAIL_CMD_PER_MOTOR` | `{1,2,3,4}` | `DSHOT_CMD_BEACON1..4` — distinct pitch per motor |
 | `APP_FAIL_INDICATE_ON_MS`    | 400   | Per-failed-motor beep on-duration |
 | `APP_FAIL_INDICATE_OFF_MS`   | 200   | Silence between beeps (re-triggers ESC beacon) |
+| `APP_SAVE_FAIL_BUZZ_MS`      | 2000  | Duration of the BEACON1 alarm if calibration flash-save fails |
+| `APP_DISPLAY_ENABLED`        | 0     | Optional display addon — see [Display addon](#display-addon-optional) |
 | `APP_LED_BLINK_FAST_HZ`      | 5     | LD3 fast-blink rate (running / POST) |
 | `APP_LED_BLINK_SLOW_HZ`      | 2     | LD3 slow-blink rate (failure indication) |
 | `APP_DSHOT_ARR`              | 266   | TIM1 ARR during TX → 3.34 µs bit cell (DShot300) |
@@ -235,6 +248,45 @@ All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 | `APP_DSHOT_RX_BIT_TICKS`     | 33    | RX bit cell @ 10 MHz tick (3.33 µs)   |
 | `APP_DSHOT_RX_PSC`           | 7     | TIM1 prescaler during RX → 10 MHz     |
 | `APP_DSHOT_RX_ARR`           | 1500  | TIM1 ARR during RX → 150 µs timeout   |
+
+## Display addon (optional)
+
+A small bench display (SSD1306 OLED, ST7789 TFT, or HD44780 char
+LCD) is supported as an **optional accessory**. The default build
+has `APP_DISPLAY_ENABLED = 0` in `app_config.h` and every
+`Display_*` call compiles to a no-op — zero runtime cost, zero
+binary footprint. The application code (`Core/Src/test_state.c`)
+already calls `Display_Status(...)` at every state transition with
+appropriate text, so when the display driver lands the panel will
+start rendering immediately.
+
+To enable:
+
+1. Wire the panel — recommended SSD1306 OLED on I2C1:
+   `SCL → PB6`, `SDA → PB7`, `VCC → 3.3 V`, `GND → GND`.
+2. Set `APP_DISPLAY_ENABLED = 1` in `Core/Inc/app_config.h`.
+3. Fill in the driver bodies in `Core/Src/display.c` (init the
+   I2C bus, push a framebuffer, render the three lines).
+4. Rebuild and reflash.
+
+State → display mapping (already wired into `test_state.c`):
+
+| Phase                 | Line 1            | Line 2                              | Line 3                |
+|-----------------------|-------------------|-------------------------------------|------------------------|
+| POST                  | `SELF-TEST`       | `checking ESC link...`              | empty                  |
+| Idle                  | `READY`           | `2x press = TEST`                   | `3x press = CAL`       |
+| Plateau A             | `TEST 15%`        | `PLATEAU A  1/3`                    | empty                  |
+| Plateau B             | `TEST 25%`        | `PLATEAU B  2/3`                    | empty                  |
+| Plateau C             | `TEST 40%`        | `PLATEAU C  3/3`                    | empty                  |
+| Spin-down             | `COOL-DOWN`       | `SPIN-DOWN  4/4`                    | empty                  |
+| Result-pass           | `PASS`            | `all 4 motors good`                 | `press to clear`       |
+| Result-fail           | `FAIL`            | per-motor `M0:OK M1:** M2:OK M3:OK` | `press to clear`       |
+| Calibrating (each cycle) | `CALIBRATING`  | `cycle N/20`                        | empty                  |
+| Calibration-done OK   | `CAL DONE`        | `SAVED to flash`                    | `press to clear`       |
+| Calibration-done fail | `CAL DONE`        | `SAVE FAILED`                       | `see # RECOMMEND`      |
+
+The same three-line API works for any of the candidate panels;
+the driver maps lines to whatever the hardware supports.
 
 ## Production-readiness status
 

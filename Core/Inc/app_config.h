@@ -93,6 +93,17 @@
 #define APP_FAIL_INDICATE_ON_MS     400U
 #define APP_FAIL_INDICATE_OFF_MS    200U
 
+/* If a calibration finishes but the flash write fails, all four motors
+ * play one BEACON1 buzz for this duration before going silent. LD3
+ * stays fast-blinking until the operator clears with single-press. */
+#define APP_SAVE_FAIL_BUZZ_MS       2000U
+
+/* Optional bench-display addon. 0 = no display (default); Display_*
+ * calls compile to no-ops. Set to 1 plus implement the driver bodies
+ * in Core/Src/display.c when hardware is wired (SSD1306 OLED on I2C1
+ * PB6/PB7, ST7789 TFT on SPI1, or HD44780 LCD on an I2C backpack). */
+#define APP_DISPLAY_ENABLED         0
+
 /* DShot300 RX (input capture, after end-of-frame). PSC=7 -> 10 MHz tick
  * (0.1 us); ARR=1500 -> 150 us RX timeout window; nominal bit cell at the
  * same 300 kbit/s rate -> 33 ticks. Decoder samples mid-cell so it

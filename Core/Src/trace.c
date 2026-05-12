@@ -172,6 +172,28 @@ static void trace_write_kv(const char *prefix, uint32_t value)
     trace_write_u32(value);
 }
 
+void Trace_PrintConfigLoaded(const uint16_t tol[4], const char *src)
+{
+    if (tol == NULL || src == NULL) return;
+    trace_write("# CONFIG source=");
+    trace_write(src);
+    trace_write_kv("  a:",  tol[0]);
+    trace_write_kv(" b:",   tol[1]);
+    trace_write_kv(" c:",   tol[2]);
+    trace_write_kv(" hl:",  tol[3]);
+    trace_write("\r\n");
+}
+
+void Trace_PrintConfigSaved(bool ok, uint32_t rc)
+{
+    if (ok) {
+        trace_write("# SAVED tolerances to flash\r\n");
+    } else {
+        trace_write_kv("# SAVE FAILED rc=", rc);
+        trace_write("\r\n");
+    }
+}
+
 void Trace_PrintPost(const uint16_t valid_frames[APP_NUM_MOTORS],
                      bool overall_pass)
 {

@@ -240,10 +240,107 @@ Example output (sigma_x10 / recommend_x10 in tenths-of-percent):
 
 Each recommended value is `max(default, 3*sigma)` so a quieter-than-
 expected batch never tightens below the conservative starting floor.
-Paste the four numbers into `Core/Inc/app_config.h` and rebuild.
+
+**The recommended values are written to MCU flash automatically** —
+see "Non-volatile config persistence" below. The operator does NOT
+need to paste anything into `app_config.h` for normal use; the
+`# RECOMMEND` line is kept as a fallback for the case where the
+flash write fails.
 
 Single-press during calibration aborts the run — the partial CSV
-rows are still in the host log, but no summary is emitted.
+rows are still in the host log, but no summary is emitted and the
+existing saved tolerances stay in flash.
+
+## Non-volatile config persistence
+
+The calibrated tolerances are stored in the **last 2 KB page of the
+L432KC's main flash** — page 127, address `0x0803F800`. Layout
+(24 bytes, three doubleword-aligned writes):
+
+```
+offset 0   magic     'MTRC' = 0x4D545243
+offset 4   version   1
+offset 6   plat_a_x10
+offset 8   plat_b_x10
+offset 10  plat_c_x10
+offset 12  half_life_x10
+offset 14  reserved
+offset 16  crc32     (CRC-32 over bytes 0..15, polynomial 0xEDB88320)
+offset 20  pad       (doubleword alignment)
+```
+
+**Read at boot.** `TestState_Init` calls `NvConfig_Load`. On success
+the loaded tolerances replace the compile-time defaults in
+`s_runtime_tol[]`; on failure (bad magic, bad CRC, all-`0xFF`
+unprogrammed page) the defaults are used. The boot trace records
+which source is active:
+
+```
+# CONFIG source=flash     a:70 b:93 c:144 hl:426
+# CONFIG source=defaults  a:70 b:80 c:100 hl:200
+```
+
+**Write at end of calibration.** After the 20th cycle the firmware
+calls `NvConfig_Save`:
+
+1. `__disable_irq()` — block IRQs for the ~3-5 ms write window
+   (single-bank flash stalls instruction fetches during program/erase).
+2. Unlock `FLASH->CR` with the standard `0x45670123` / `0xCDEF89AB`
+   key sequence.
+3. Page-erase 127.
+4. Three doubleword writes (8 bytes each).
+5. Lock `FLASH->CR`.
+6. `__enable_irq()`.
+
+On success the trace emits `# SAVED tolerances to flash`. On failure
+(rare — flash worn out, voltage glitch) the trace emits
+`# SAVE FAILED rc=<sr>` and the operator sees LD3 fast-blink + a
+2-second BEACON1 alarm on all four motors. The `# RECOMMEND` line in
+the log is still copy-pastable as a fallback.
+
+**Endurance:** STM32L4 flash is rated for 10 000 erase cycles per
+page. A production line that calibrates once per shift / batch
+wears it out in ~30 years.
+
+**Recovery from corruption:** if power drops mid-save, the page may
+be partially erased. On the next boot, magic/CRC fails and the
+firmware falls back to compile-time defaults. The operator simply
+re-runs calibration to restore.
+
+**Reset to defaults:** re-calibrate (overwrites) or mass-erase the
+chip via STM32CubeIDE's flash settings. The L432's mass-erase
+clears all pages including page 127.
+
+**Boot order:** `App_Init` calls `NvConfig_Load` (inside
+`TestState_Init`) AFTER `Trace_Init`/`Trace_PrintHeader` so the
+`# CONFIG` line lands cleanly between the CSV header and the
+`# POST` line.
+
+## Display addon (optional)
+
+The firmware ships with a `Display_*` abstraction wired into every
+state transition but **no real driver** by default. With
+`APP_DISPLAY_ENABLED = 0` (the default) all `Display_*` calls
+compile to no-ops; the rig behaves identically to a build without
+the abstraction.
+
+To enable a real panel:
+
+1. **Pick hardware**:
+   - **SSD1306 OLED 128×64** on I2C1 (PB6 SCL / PB7 SDA). ~$3-5. 1 KB framebuffer in SRAM. ~600 lines of driver.
+   - **ST7789 TFT 240×240** on SPI1 (PA5 SCK / PA7 MOSI + 3 GPIO for CS/DC/RST). ~$8-12. Cannot fit a full 115 KB framebuffer; render one row at a time.
+   - **HD44780 char LCD 16×2 or 20×4** via I2C backpack at 0x27 (PB6/PB7). ~$5-8. ~150 lines of driver.
+2. Wire the panel to the listed pins. (None of these collide with the existing pin map; PB6/PB7 are completely free.)
+3. Set `APP_DISPLAY_ENABLED = 1` in `Core/Inc/app_config.h`.
+4. Implement the three function bodies in `Core/Src/display.c`
+   (currently stubbed behind `#if APP_DISPLAY_ENABLED == 0`).
+5. Rebuild + reflash.
+
+The `Display_Status(line1, line2, line3)` API is intentionally
+generic three-line text. The driver maps the lines onto whatever
+the panel supports — a 2-line LCD drops `l3`; a colour TFT can
+add backgrounds. See the table in `README.md → Display addon` for
+which text appears at each state transition.
 
 ## Pass/fail beacons and per-motor failure indication
 

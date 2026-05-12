@@ -16,6 +16,7 @@
 
 #include "../Core/Inc/calibration.h"
 #include "../Core/Inc/dshot_gcr.h"
+#include "../Core/Inc/nvconfig.h"
 #include "../Core/Inc/rpm_stats.h"
 
 #include <assert.h>
@@ -502,6 +503,84 @@ static void test_composite_aggregate(void)
     CHECK(r.per_motor_pass[3], "motor 3 should pass");
 }
 
+static void test_nv_crc32_known_vector(void)
+{
+    /* Standard CRC-32 test vector: CRC of "123456789" = 0xCBF43926. */
+    const uint8_t v[] = {'1','2','3','4','5','6','7','8','9'};
+    uint32_t crc = NvConfig_CRC32(v, sizeof(v));
+    CHECK(crc == 0xCBF43926U,
+          "CRC-32 of '123456789' = 0x%08X, want 0xCBF43926", crc);
+}
+
+static void test_nv_round_trip(void)
+{
+    NvConfig in = {
+        .magic         = NVCONFIG_MAGIC,
+        .version       = NVCONFIG_SCHEMA_VERSION,
+        .plat_a_x10    = 70,
+        .plat_b_x10    = 93,
+        .plat_c_x10    = 144,
+        .half_life_x10 = 426,
+        .reserved      = 0,
+        .crc32         = 0,
+        .pad           = 0,
+    };
+    NvConfig_FillCrc(&in);
+
+    uint8_t buf[NVCONFIG_BLOB_SIZE];
+    CHECK(NvConfig_Serialize(&in, buf, sizeof(buf)) == NVCONFIG_BLOB_SIZE,
+          "Serialize must return NVCONFIG_BLOB_SIZE");
+
+    NvConfig out;
+    bool ok = NvConfig_ParseBuffer(buf, sizeof(buf), &out);
+    CHECK(ok, "Round-trip parse must succeed");
+    CHECK(out.plat_a_x10 == 70,  "round-trip a == 70");
+    CHECK(out.plat_b_x10 == 93,  "round-trip b == 93");
+    CHECK(out.plat_c_x10 == 144, "round-trip c == 144");
+    CHECK(out.half_life_x10 == 426, "round-trip hl == 426");
+}
+
+static void test_nv_bad_magic(void)
+{
+    NvConfig in = { .magic = 0xDEADBEEF, .version = NVCONFIG_SCHEMA_VERSION };
+    NvConfig_FillCrc(&in);
+
+    uint8_t buf[NVCONFIG_BLOB_SIZE];
+    NvConfig_Serialize(&in, buf, sizeof(buf));
+
+    NvConfig out;
+    CHECK(!NvConfig_ParseBuffer(buf, sizeof(buf), &out),
+          "Parse must reject bad magic");
+}
+
+static void test_nv_bad_crc(void)
+{
+    NvConfig in = {
+        .magic = NVCONFIG_MAGIC, .version = NVCONFIG_SCHEMA_VERSION,
+        .plat_a_x10 = 100,
+    };
+    NvConfig_FillCrc(&in);
+
+    uint8_t buf[NVCONFIG_BLOB_SIZE];
+    NvConfig_Serialize(&in, buf, sizeof(buf));
+    buf[6] ^= 0xFF;     /* flip plat_a_x10; CRC no longer matches */
+
+    NvConfig out;
+    CHECK(!NvConfig_ParseBuffer(buf, sizeof(buf), &out),
+          "Parse must reject bit-flipped payload");
+}
+
+static void test_nv_unprogrammed_page(void)
+{
+    /* A virgin flash page reads as all 0xFF. Must parse as "no config". */
+    uint8_t buf[NVCONFIG_BLOB_SIZE];
+    memset(buf, 0xFF, sizeof(buf));
+
+    NvConfig out;
+    CHECK(!NvConfig_ParseBuffer(buf, sizeof(buf), &out),
+          "Parse must reject all-0xFF unprogrammed page");
+}
+
 int main(void)
 {
     test_roundtrip_basic();
@@ -521,6 +600,11 @@ int main(void)
     test_calibration_zero_variance();
     test_calibration_three_sigma_above_default();
     test_calibration_known_variance();
+    test_nv_crc32_known_vector();
+    test_nv_round_trip();
+    test_nv_bad_magic();
+    test_nv_bad_crc();
+    test_nv_unprogrammed_page();
 
     printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

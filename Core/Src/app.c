@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include "button.h"
+#include "display.h"
 #include "dshot.h"
 #include "led.h"
 #include "test_state.h"
@@ -15,7 +16,8 @@ void App_Init(void)
     DShot_Init();
     Trace_Init();
     Trace_PrintHeader();
-    TestState_Init();
+    Display_Init();         /* no-op when APP_DISPLAY_ENABLED == 0 */
+    TestState_Init();       /* loads NvConfig and prints # CONFIG line */
 }
 
 void App_Tick(void)
