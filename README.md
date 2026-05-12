@@ -97,6 +97,21 @@ from `motor_test_rig.ioc`.
    and rebuilds — that's the §8 "process a known-good batch and set
    max(default, 3 sigma)" workflow, automated.
 
+## Button gestures (operator cheat-sheet)
+
+| Gesture       | Active phase                                  | Effect |
+|---------------|-----------------------------------------------|--------|
+| Double-press  | Idle                                          | Start composite test (~13 s) |
+| Triple-press  | Idle                                          | Start auto-calibration (~4-5 min, 20 cycles) |
+| Single-press  | POST / Plateau A-C / Spin-down / mid-calibration | Abort to Idle (silent — motors stopped, no result emitted) |
+| Single-press  | Result-fail (fail-indicate cadence)           | Clear result, return to Idle |
+| Single-press  | Result-pass (LD3 solid) / Calibration-done    | Clear result, return to Idle |
+| _Power cycle_ | _Any_                                         | Re-runs the boot POST link-test |
+
+The button is detected by counting press-and-release events within a
+`APP_DOUBLE_PRESS_WINDOW_MS` window (default 400 ms); any value ≥ 3 in
+that window registers as a triple-press.
+
 ## Live logging (CSV over USB)
 
 Every test cycle emits one CSV row over the **same micro-USB cable you
@@ -122,6 +137,24 @@ Pipe to a file for archival (`screen | tee log.csv` or
 `stty -F /dev/ttyACM0 115200 raw && cat /dev/ttyACM0 >> log.csv`) and
 open in Excel — the header line makes the columns self-describing.
 
+### Trace line reference
+
+The host terminal sees four distinct line types. Standard CSV
+parsers ignore the `#`-prefixed lines so the data rows can be
+imported directly while the comment lines stay human-readable.
+
+| First bytes | Meaning | When emitted | Example |
+|---|---|---|---|
+| `cycle_id,t_ms,...` | CSV header (column names)              | Once at boot              | `cycle_id,t_ms,overall_pass,aborted,m0_pass,...` |
+| `<n>,<ms>,1,0,1,...` | Data row — completed cycle             | End of every cycle        | `1,17392,1,0,1,5012,8047,12089,76,1,4998,...`    |
+| `<n>,<ms>,0,1,0,...` | Data row — aborted cycle, zeroed cols  | Operator single-presses mid-test | `2,18900,0,1,0,0,0,0,0,0,0,0,0,...`        |
+| `# POST valid_frames = ...` | Power-on self-test result        | Once at boot, after the 100 ms link-test | `# POST valid_frames = c0:97 c1:96 c2:97 c3:97  overall_pass=1` |
+| `# CALIBRATION n=... sigma_x10 = ...` | Per-phase σ summary    | End of triple-press calibration | `# CALIBRATION n=20 samples/phase=80  sigma_x10 = a:23 b:31 c:48 hl:142  recommend_x10 = a:70 b:93 c:144 hl:426` |
+| `# RECOMMEND APP_PLATEAU_*_TOL_PCT_X10=...` | Copy-pastable tolerance block | Immediately after `# CALIBRATION` | `# RECOMMEND   APP_PLATEAU_A_TOL_PCT_X10=70  APP_PLATEAU_B_TOL_PCT_X10=93  APP_PLATEAU_C_TOL_PCT_X10=144  APP_HALF_LIFE_TOL_PCT_X10=426` |
+
+`t_ms` is `HAL_GetTick()` at the moment the row was emitted; it
+increments monotonically from boot and wraps at ~49 days.
+
 ## Module layout
 
 ```
@@ -129,13 +162,13 @@ Core/
 ├── Inc/
 │   ├── dshot.h          bidirectional DShot300 driver API
 │   ├── dshot_gcr.h      pure 5b/4b GCR decoder (host-testable)
-│   ├── button.h         debounced single/double-press detection
+│   ├── button.h         debounced single / double / triple-press detection
 │   ├── led.h            LD3 state (off / solid / slow blink / fast blink)
 │   ├── rpm_stats.h      per-window deviation pass/fail + half-life + composite
-│   ├── test_state.h     Idle / 3 plateaus / SpinDown / Result FSM
-│   ├── trace.h          USART2 CSV logger (one row per cycle)
+│   ├── test_state.h     Idle / POST / 3 plateaus / SpinDown / Result / Calibration FSM
+│   ├── trace.h          USART2 CSV logger (one row per cycle + boot POST + calibration)
 │   ├── calibration.h    auto-calibration sigma + recommended tolerances
-│   └── app_config.h     PRD-level tunables in one place
+│   └── app_config.h     all tunables in one place
 ├── Src/
 │   ├── dshot.c          TIM1 + DMA TX, IC + DMA RX, calls into dshot_gcr
 │   ├── dshot_gcr.c      pure decode logic — no STM32 deps
@@ -182,7 +215,7 @@ All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 | `APP_PLATEAU_DURATION_MS`    | 3000  | Per plateau, including the startup-skip window |
 | `APP_PLATEAU_SKIP_MS`        | 500   | Transient skipped at the start of each plateau |
 | `APP_SPIN_DOWN_DURATION_MS`  | 4000  | Coast-down telemetry window for the half-life check |
-| `APP_PLATEAU_A_TOL_PCT_X10`  | 70    | ±7.0 % — see "On the tolerance choice" in plan doc |
+| `APP_PLATEAU_A_TOL_PCT_X10`  | 70    | ±7.0 % — empirical mid-point; calibrate per batch |
 | `APP_PLATEAU_B_TOL_PCT_X10`  | 80    | ±8.0 % |
 | `APP_PLATEAU_C_TOL_PCT_X10`  | 100   | ±10.0 % — slip noise grows with throttle |
 | `APP_HALF_LIFE_TOL_PCT_X10`  | 200   | ±20.0 % — bearing variance is wide |
@@ -194,6 +227,65 @@ All magic numbers live in [`Core/Inc/app_config.h`](Core/Inc/app_config.h):
 | `APP_BEACON_FAIL_CMD_PER_MOTOR` | `{1,2,3,4}` | `DSHOT_CMD_BEACON1..4` — distinct pitch per motor |
 | `APP_FAIL_INDICATE_ON_MS`    | 400   | Per-failed-motor beep on-duration |
 | `APP_FAIL_INDICATE_OFF_MS`   | 200   | Silence between beeps (re-triggers ESC beacon) |
+| `APP_LED_BLINK_FAST_HZ`      | 5     | LD3 fast-blink rate (running / POST) |
+| `APP_LED_BLINK_SLOW_HZ`      | 2     | LD3 slow-blink rate (failure indication) |
+| `APP_DSHOT_ARR`              | 266   | TIM1 ARR during TX → 3.34 µs bit cell (DShot300) |
+| `APP_DSHOT_T1H`              | 200   | CCR for a DShot "1" bit (~75 % of bit cell) |
+| `APP_DSHOT_T0H`              | 100   | CCR for a DShot "0" bit (~37.5 % of bit cell) |
 | `APP_DSHOT_RX_BIT_TICKS`     | 33    | RX bit cell @ 10 MHz tick (3.33 µs)   |
 | `APP_DSHOT_RX_PSC`           | 7     | TIM1 prescaler during RX → 10 MHz     |
 | `APP_DSHOT_RX_ARR`           | 1500  | TIM1 ARR during RX → 150 µs timeout   |
+
+## Production-readiness status
+
+The firmware has been audited end-to-end at commit `d11c3a5` for the
+bug classes that bite embedded production code:
+
+- **Concurrency / ISR safety.** Every shared mutable variable
+  between SysTick and the DShot IRQs (`s_telem[]`, `s_pending`,
+  `s_phase`, calibration accumulators) is either single-context or
+  protected. The producer–consumer handshake on `s_telem[ch]` uses
+  the **single-writer-flag** pattern: `dshot_decode_rx` commits the
+  data fields, executes `__DMB()`, then sets `.valid`. The consumer
+  (`DShot_ConsumeTelem`) reads `.valid` first (single-byte atomic
+  LDRB) and the struct under `__disable_irq` PRIMASK protection.
+  The contract holds regardless of relative NVIC priority.
+- **NVIC priority invariant.** HAL_Init sets SysTick at priority 15
+  (lowest); `DShot_Init` sets `TIM1_UP_TIM16_IRQn` and
+  `DMA1_Channel4_IRQn` at priority 1. The DShot IRQs can preempt
+  SysTick, never the other way around. This is the recommended
+  configuration; the single-writer-flag pattern is the belt that
+  keeps the consumer correct even if a future CubeMX regeneration
+  flips the priorities.
+- **Integer math.** Per-motor deviations are bounded by physical
+  motor RPM (~ 16 kRPM max no-load). Group means are guarded against
+  zero (`RpmStats_Evaluate` early-return). Calibration sigma uses
+  uint64 sum-of-squares and an integer Newton-Raphson `isqrt`,
+  saturated at 0xFFFF. No undefined behaviour reachable from real
+  hardware inputs.
+- **State-machine edge cases.** Abort at any phase transitions to
+  Idle silently; mid-calibration abort drops the summary cleanly
+  (raw cycle rows are still in the host log); equal-priority IRQs
+  tail-chain rather than preempt (verified against `.ioc`'s
+  `NVIC_PRIORITYGROUP_4`).
+- **Host-side tests.** 80 / 80 assertions covering GCR decode round-
+  trip, CRC corruption, motor-stopped sentinel, RPM math, RPM-stats
+  staircase, half-life envelope, composite aggregation, integer
+  square root, and the calibration math at zero / known / 3σ
+  variance.
+
+**Outstanding low-risk items** (acceptable for production, can be
+hardened later if bench iteration surfaces them):
+
+- The two USART busy-waits in `Core/Src/trace.c` (`trace_usart_init`
+  on `TEACK` and `trace_write_byte` on `TXE`) have no timeout. If the
+  on-board ST-LINK USART is broken the rig hangs at boot — which is
+  the same failure surface as "rig is unusable" anyway, so the
+  unbounded wait is not a hidden bug, just defensive polish to add
+  if a future board variant warrants it.
+
+**Remaining gate before deployment:** bench bring-up against a real
+Nucleo-L432KC + 4-in-1 ESC + production motor batch, walking every
+PRD §7 acceptance bullet plus a fresh triple-press calibration run.
+The firmware has not yet executed on real hardware; all functional
+validation to date is host-side and code-review based.

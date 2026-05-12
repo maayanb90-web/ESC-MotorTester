@@ -38,6 +38,60 @@ unwanted side effects (e.g. driving outputs briefly during startup),
 delete them inside `/* USER CODE BEGIN 2 */` blocks; CubeMX will not
 re-insert them.
 
+## Concurrency invariants
+
+Two execution contexts share state in this firmware:
+
+- **SysTick** (calls `App_Tick` → `Button_Tick` → `TestState_Tick`
+  → `Led_Tick`) at HAL's default priority 15 (lowest).
+- **DShot IRQs** (`DMA1_Channel4_IRQHandler` end-of-frame and
+  `TIM1_UP_TIM16_IRQHandler` RX timeout) at priority 1, set by
+  `DShot_Init`.
+
+DShot can preempt SysTick (lower numeric priority = higher); SysTick
+cannot preempt DShot. The one shared mutable buffer is
+`s_telem[APP_NUM_MOTORS]` in `Core/Src/dshot.c` — written by
+`dshot_decode_rx` (TIM1_UP context), read by `DShot_ConsumeTelem`
+(SysTick context).
+
+### The single-writer-flag handshake on `s_telem[ch]`
+
+Writer (`dshot_decode_rx`):
+
+```c
+s_telem[ch].period_us = ...;
+s_telem[ch].erpm      = ...;
+s_telem[ch].rpm       = ...;
+__DMB();                       /* commit data fields before .valid  */
+s_telem[ch].valid     = true;  /* atomic byte; flips last           */
+```
+
+Reader (`DShot_ConsumeTelem`):
+
+```c
+if (!s_telem[ch].valid) return invalid;   /* single-byte LDRB, atomic */
+__disable_irq();                          /* PRIMASK blocks DShot IRQ */
+out = s_telem[ch];                        /* struct copy under PRIMASK */
+s_telem[ch].valid = false;
+__enable_irq();
+```
+
+The contract holds **regardless of NVIC priority ordering**:
+
+- If DShot is higher priority than SysTick (today's config): the
+  writer is never preempted by the reader. `__disable_irq` in the
+  reader masks DShot during the struct copy, so the reader never
+  observes a mid-write state. Safe.
+- If SysTick somehow ends up higher priority than DShot (e.g.
+  `TICK_INT_PRIORITY` redefined to 0 by a future CubeMX regen): the
+  reader could preempt the writer. Because the writer commits
+  `.valid` **last** and after a `__DMB`, the reader's atomic LDRB
+  of `.valid` reads true only after the data fields are visible.
+  Still safe.
+
+This is the **production invariant**: do not change the field-write
+order in `dshot_decode_rx`, and do not remove the `__DMB`.
+
 ## Bidirectional DShot RX bring-up
 
 The RX path is **implemented end-to-end** and exercised by host tests
@@ -61,21 +115,26 @@ When bringing the RX path up against real hardware, work in this order:
    ESC pulls low ~30 µs later and emits ~21 edges over ~110 µs.
 
 3. **GCR decode sanity**: `make -C tools test` must report
-   `34 passed, 0 failed`. The round-trip fixture builds a bidir frame
+   `80 passed, 0 failed`. The round-trip fixture builds a bidir frame
    for a synthesised eRPM period, runs it through `DShotGcr_Decode`,
-   and asserts the recovered period and CRC. If you capture a real
+   and asserts the recovered period and CRC. Other fixtures cover
+   RPM stats, half-life envelope, composite aggregation, integer
+   square root, and the calibration math. If you capture a real
    frame with a logic analyzer, you can drop its edge timestamps into
    `tools/decode_test.c` to verify the decoder against your actual ESC.
 
 4. **Single-motor test**: connect one motor only. Expect the connected
    channel to report a sane RPM (~5000 RPM for the production motor at
    15 % throttle); the other three should fail "no telemetry" → 2 Hz
-   blink + low buzz.
+   blink + per-motor pitched buzz on the failed channels (BEACON1-4,
+   ~250 / 280 / 330 / 430 Hz by channel).
 
 5. **Four-motor test** with a known-good batch: all four within
    ±2-3 % of the group mean → solid LD3 + high chime.
 
-6. **Negative test**: pull one signal wire during a run → blink + buzz.
+6. **Negative test**: pull one signal wire during a run → blink + buzz
+   on the wire-pulled channel only; the other three stay silent. The
+   pitch identifies which channel is bad.
 
 ## Composite test (staircase + spin-down)
 
